@@ -250,4 +250,76 @@ with tab1:
         with col_out:
             st.subheader("👋 必然剔除 (排名 > 60)")
             if not must_out.empty:
-                must_out["現價"
+                must_out["現價"] = must_out["股票代碼"].map(lambda x: prices.get(x, "-"))
+                st.error("⚠️ 預期會有被動賣壓")
+                st.dataframe(must_out[["排名", "股票代碼", "股票名稱", "現價"]], hide_index=True)
+            else:
+                st.write("無")
+                
+        with col_danger:
+            st.subheader("⚠️ 危險邊緣 (41~60)")
+            danger = in_list_stocks[(in_list_stocks["排名"] > 40) & (in_list_stocks["排名"] <= 60)].sort_values("排名", ascending=False)
+            if not danger.empty:
+                st.dataframe(danger[["排名", "股票代碼", "股票名稱"]], hide_index=True)
+            else:
+                st.write("無")
+    else:
+        st.warning("無法取得 0050 資料")
+
+# ==========================================
+# Tab 2: MSCI
+# ==========================================
+with tab2:
+    # 策略看板
+    st.markdown(f"""
+    <div style="padding: 15px; background-color: #fff8e6; border-left: 5px solid #fdcb6e; border-radius: 5px; margin-bottom: 20px;">
+        <h4>💡 MSCI 下回調整：{msci_s['next_month']}月</h4>
+        <ul>
+            <li><b>關鍵差異：</b> MSCI 看重「自由流通市值」，非單純總市值。</li>
+            <li><b>高機率納入：</b> 市值衝進前 <b>85</b> 名但尚未納入者，機率極高。</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if msci_codes:
+        # 邏輯優化：
+        # 1. 高機率納入 (High Probability): Rank <= 85 & Not in MSCI
+        #    (台灣 MSCI 成分股通常在 88~90 檔左右，取 85 是安全邊際)
+        high_prob_in = df_mcap[(df_mcap["排名"] <= 85) & (~df_mcap["股票代碼"].isin(msci_codes))].copy()
+        
+        # 2. 潛在觀察 (Watch list): 86~100 名
+        watch_in = df_mcap[(df_mcap["排名"] > 85) & (df_mcap["排名"] <= 100) & (~df_mcap["股票代碼"].isin(msci_codes))].copy()
+        
+        # 3. 潛在剔除
+        pot_out = df_mcap[(df_mcap["排名"] > 100) & (df_mcap["股票代碼"].isin(msci_codes))].copy()
+
+        # 抓股價
+        target_codes = list(high_prob_in["股票代碼"]) + list(pot_out["股票代碼"])
+        prices = get_stock_info(target_codes)
+
+        # 顯示
+        st.subheader("🔥 高機率納入名單 (排名 ≤ 85)")
+        if not high_prob_in.empty:
+            high_prob_in["現價"] = high_prob_in["股票代碼"].map(lambda x: prices.get(x, "-"))
+            st.success("注意！市值已達 MSCI 安全水位，納入機率高！")
+            st.dataframe(high_prob_in[["排名", "股票代碼", "股票名稱", "現價"]], hide_index=True)
+        else:
+            st.info("目前前 85 名皆已在 MSCI 名單內，無明顯漏網之魚。")
+            
+        st.divider()
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("🚀 邊緣觀察區 (86~100)")
+            st.dataframe(watch_in[["排名", "股票代碼", "股票名稱"]], hide_index=True)
+            
+        with c2:
+            st.subheader("⚠️ 潛在剔除風險 (>100)")
+            if not pot_out.empty:
+                pot_out["現價"] = pot_out["股票代碼"].map(lambda x: prices.get(x, "-"))
+                st.dataframe(pot_out[["排名", "股票代碼", "股票名稱", "現價"]], hide_index=True)
+            else:
+                st.write("目前無明顯剔除風險個股")
+                
+    else:
+        st.warning("無法取得 MSCI 名單")
