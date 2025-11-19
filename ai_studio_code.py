@@ -5,16 +5,15 @@ from bs4 import BeautifulSoup
 import re
 import io
 import chardet
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import urllib3
 import yfinance as yf
+import calendar
 
 # -------------------------------------------
 # 1. 基礎設定與工具
 # -------------------------------------------
-st.set_page_config(page_title="台股指數調整預測 Pro", layout="wide")
-
-# 忽略 SSL 警告
+st.set_page_config(page_title="台股指數調整戰情室", layout="wide")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 HEADERS = {
@@ -26,7 +25,6 @@ HEADERS = {
 # -------------------------------------------
 @st.cache_data(ttl=3600)
 def fetch_taifex_rankings(limit=200):
-    """抓取期交所市值排名"""
     url = "https://www.taifex.com.tw/cht/9/futuresQADetail"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
@@ -66,7 +64,7 @@ def fetch_taifex_rankings(limit=200):
 
 @st.cache_data(ttl=3600)
 def fetch_msci_list():
-    """抓取 MSCI 成分股"""
+    """注意：這裡抓取的是目前生效的名單 (通常尚未更新為最新公布的結果)"""
     url = "https://stock.capital.com.tw/z/zm/zmd/zmdc.djhtm?MSCI=0"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20, verify=False)
@@ -81,7 +79,6 @@ def fetch_msci_list():
 
 @st.cache_data(ttl=3600)
 def fetch_0050_holdings():
-    """抓取 0050 成分股"""
     url = "https://www.moneydj.com/ETF/X/Basic/Basic0007a.xdjhtm?etfid=0050.TW"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20, verify=False)
@@ -99,7 +96,6 @@ def fetch_0050_holdings():
 
 @st.cache_data(ttl=300)
 def get_stock_info(codes):
-    """取得即時股價"""
     if not codes: return {}
     try:
         tickers = " ".join([f"{c}.TW" for c in codes])
@@ -117,94 +113,185 @@ def get_stock_info(codes):
     except: return {}
 
 # -------------------------------------------
-# 3. 日程判斷邏輯 (修正 Bug)
+# 3. 智能日程判斷 (加入「已公布」邏輯)
 # -------------------------------------------
-def get_schedule_info():
-    """計算並回傳 MSCI 與 0050 的日程資訊"""
+def get_smart_schedule():
     today = date.today()
     m = today.month
+    d = today.day
     
-    # 輔助函式：找下一個發生的月份
-    def find_next_month(current, months):
-        # 先找今年還有沒有剩下的月份
-        candidates = [x for x in months if x >= current]
-        if candidates:
-            return candidates[0] # 如果有，取最近的一個
+    # 計算當月最後一個交易日 (粗略計算為當月最後一天)
+    last_day = calendar.monthrange(today.year, m)[1]
+    effective_date = date(today.year, m, last_day)
+    
+    # --- MSCI 邏輯 (2, 5, 8, 11月) ---
+    msci_months = [2, 5, 8, 11]
+    
+    # 判斷本月是否為 MSCI 月
+    if m in msci_months:
+        # 如果還沒到月中 (假設 7號公布)
+        if d < 7:
+            msci_status = "prediction" # 預測期
+            msci_text = f"本月 ({m}月) 為調整月份，預計近日公布！"
+        # 如果已經過了公布日，但還沒到月底生效
+        elif 7 <= d <= last_day:
+            msci_status = "announced" # 已公布，等待生效
+            msci_text = f"本月名單 **已公布**！將於 {m}/{last_day} 收盤生效。"
         else:
-            return months[0] # 如果沒有，取明年的第一個
+            msci_status = "done" # 本月已結束
+            msci_text = "本月調整已結束。"
+        target_msci_month = m
+    else:
+        # 找下一個月份
+        candidates = [x for x in msci_months if x > m]
+        target_msci_month = candidates[0] if candidates else 2
+        msci_status = "future"
+        msci_text = f"下回調整：{target_msci_month}月"
 
-    # MSCI (2, 5, 8, 11月)
-    next_msci = find_next_month(m, [2, 5, 8, 11])
     msci_info = {
-        "next_month": next_msci,
-        "announce": "該月中旬 (約10-15日)",
-        "effective": "該月月底收盤"
+        "month": target_msci_month,
+        "status": msci_status,
+        "desc": msci_text,
+        "effective_date": f"{today.year}/{target_msci_month}/{calendar.monthrange(today.year, target_msci_month)[1]}"
     }
-    
-    # 0050 (3, 6, 9, 12月)
-    # 修正：若現在是 11月, find_next_month 會回傳 12
-    next_ftse = find_next_month(m, [3, 6, 9, 12])
-    
+
+    # --- 0050 邏輯 (3, 6, 9, 12月) ---
+    ftse_months = [3, 6, 9, 12]
+    if m in ftse_months:
+        # 0050 公布日通常是第一個或第二個週五 (約 1~12號)
+        if d < 5:
+            ftse_status = "prediction"
+            ftse_text = f"本月 ({m}月) 為調整月份，即將公布！"
+        elif 5 <= d <= 20: # 假設20號生效
+            ftse_status = "announced"
+            ftse_text = f"本月名單可能 **已公布**，等待第三個週五生效。"
+        else:
+            ftse_status = "done"
+            ftse_text = "本月調整已結束。"
+        target_ftse_month = m
+    else:
+        candidates = [x for x in ftse_months if x > m]
+        target_ftse_month = candidates[0] if candidates else 3
+        ftse_status = "future"
+        ftse_text = f"下回調整：{target_ftse_month}月"
+        
     ftse_info = {
-        "next_month": next_ftse,
-        "announce": f"{next_ftse}月 第一個或第二個星期五",
-        "effective": f"{next_ftse}月 第三個星期五收盤"
+        "month": target_ftse_month,
+        "status": ftse_status,
+        "desc": ftse_text
     }
+    
     return msci_info, ftse_info
 
 # -------------------------------------------
-# 4. 主介面 UI
+# 4. 主介面
 # -------------------------------------------
 
-st.title("📊 台股指數調整預測戰情室")
-st.caption("資料來源：期交所 (排名) | MoneyDJ (0050) | Yahoo Finance (股價)")
+st.title("📊 台股指數調整戰情室")
+st.caption("資料來源：期交所 (排名) | MoneyDJ | Yahoo Finance")
 
-# 側邊欄
+msci_s, ftse_s = get_smart_schedule()
+
+# 側邊欄資訊
 with st.sidebar:
-    st.header("⚙️ 設定與資訊")
-    if st.button("🔄 強制更新資料"):
+    st.header("📅 本期戰況")
+    
+    # MSCI 狀態卡
+    if msci_s['status'] == 'announced':
+        st.success(f"**MSCI (11月)**\n\n狀態：🔴 **已公布**\n操作：等待生效日尾盤\n生效：{msci_s['effective_date']}")
+    else:
+        st.info(f"**MSCI**\n\n{msci_s['desc']}")
+
+    # 0050 狀態卡
+    if ftse_s['status'] == 'announced':
+        st.success(f"**0050 ({ftse_s['month']}月)**\n\n狀態：🔴 **已公布**\n說明：{ftse_s['desc']}")
+    else:
+        st.info(f"**0050**\n\n{ftse_s['desc']}")
+        
+    if st.button("🔄 更新最新行情"):
         st.cache_data.clear()
         st.rerun()
-    
-    st.info(f"最後更新：{datetime.now().strftime('%H:%M')}")
-    
-    st.markdown("---")
-    st.markdown("### 📅 投資行事曆")
-    msci_s, ftse_s = get_schedule_info()
-    
-    st.success(f"**0050 (富時) 調整**\n\n下回：**{ftse_s['next_month']}月**\n公布：{ftse_s['announce']}\n生效：{ftse_s['effective']}")
-    st.info(f"**MSCI 季度調整**\n\n下回：**{msci_s['next_month']}月**\n公布：{msci_s['announce']}\n生效：{msci_s['effective']}")
 
-# 抓取資料
-with st.spinner("正在分析大盤數據..."):
+with st.spinner("正在分析數據..."):
     df_mcap = fetch_taifex_rankings()
     msci_codes = fetch_msci_list()
     df_0050 = fetch_0050_holdings()
 
 if df_mcap.empty:
-    st.error("無法連線至期交所取得排名資料，請稍後再試。")
+    st.error("期交所連線失敗")
     st.stop()
 
-tab1, tab2 = st.tabs(["🇹🇼 0050 關鍵戰役", "🌍 MSCI 季度調整"])
-
-# 共用函式：加股價
-def add_price(df, codes_list):
-    if df.empty: return df
-    prices = get_stock_info(codes_list)
-    df["現價"] = df["股票代碼"].map(lambda x: prices.get(x, "-"))
-    return df
+tab1, tab2 = st.tabs(["🌍 MSCI 季度調整 (本月焦點)", "🇹🇼 0050 關鍵戰役"])
 
 # ==========================================
-# Tab 1: 0050
+# Tab 1: MSCI (本月重點)
 # ==========================================
 with tab1:
-    # 策略看板
+    # 根據狀態顯示不同的提示
+    if msci_s['status'] == 'announced':
+        st.markdown(f"""
+        <div style="padding: 15px; background-color: #ffebee; border-left: 5px solid #f44336; border-radius: 5px; margin-bottom: 20px;">
+            <h4>🚨 MSCI 11月名單已公布！</h4>
+            <ul>
+                <li><b>目前狀態：</b> 等待 <b>{msci_s['effective_date']}</b> (月底) 收盤生效。</li>
+                <li><b>重要提醒：</b> 下方列表是比對「最新市值」與「舊成分股(尚未生效更新)」。</li>
+                <li><b>如何解讀：</b> 若下方出現「高機率納入」名單，且新聞確認已納入，則該股在生效日尾盤會有<b>被動買盤</b>。</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown(f"""
+        <div style="padding: 15px; background-color: #e3f2fd; border-left: 5px solid #2196f3; border-radius: 5px; margin-bottom: 20px;">
+            <h4>ℹ️ MSCI 觀察看板</h4>
+            <ul><li>名單尚未公布，下方為根據市值排名的預測結果。</li></ul>
+        </div>
+        """, unsafe_allow_html=True)
+
+    if msci_codes:
+        # 這裡的邏輯是：網站上的 msci_codes 還沒更新 (因為還沒生效)，所以可以拿來比對
+        # 潛在納入 = 排名很前面，但不在舊名單內 -> 代表這次"應該"被納入了
+        high_prob_in = df_mcap[(df_mcap["排名"] <= 85) & (~df_mcap["股票代碼"].isin(msci_codes))].copy()
+        watch_in = df_mcap[(df_mcap["排名"] > 85) & (df_mcap["排名"] <= 100) & (~df_mcap["股票代碼"].isin(msci_codes))].copy()
+        pot_out = df_mcap[(df_mcap["排名"] > 100) & (df_mcap["股票代碼"].isin(msci_codes))].copy()
+
+        target_codes = list(high_prob_in["股票代碼"]) + list(pot_out["股票代碼"])
+        prices = get_stock_info(target_codes)
+
+        st.subheader("🔥 疑似納入/高機率名單 (排名 ≤ 85)")
+        if not high_prob_in.empty:
+            high_prob_in["現價"] = high_prob_in["股票代碼"].map(lambda x: prices.get(x, "-"))
+            st.success("這些股票市值排名極高但不在舊名單中，請核對新聞是否已宣布納入！")
+            st.dataframe(high_prob_in[["排名", "股票代碼", "股票名稱", "現價"]], hide_index=True)
+        else:
+            st.info("前 85 名皆已在舊名單內 (或網站已提前更新名單)。")
+            
+        st.divider()
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.subheader("🚀 邊緣觀察區 (86~100)")
+            st.dataframe(watch_in[["排名", "股票代碼", "股票名稱"]], hide_index=True)
+        with c2:
+            st.subheader("⚠️ 疑似剔除/高風險 (>100)")
+            if not pot_out.empty:
+                pot_out["現價"] = pot_out["股票代碼"].map(lambda x: prices.get(x, "-"))
+                st.error("這些股票仍在舊名單中但市值滑落，請核對新聞是否已剔除。")
+                st.dataframe(pot_out[["排名", "股票代碼", "股票名稱", "現價"]], hide_index=True)
+            else:
+                st.write("無")
+    else:
+        st.warning("無法取得 MSCI 舊名單")
+
+# ==========================================
+# Tab 2: 0050
+# ==========================================
+with tab2:
     st.markdown(f"""
     <div style="padding: 15px; background-color: #e6fffa; border-left: 5px solid #00b894; border-radius: 5px; margin-bottom: 20px;">
-        <h4>💡 0050 下回調整：{ftse_s['next_month']}月</h4>
+        <h4>💡 0050 下回調整：{ftse_s['month']}月</h4>
         <ul>
-            <li><b>買入時機：</b> {ftse_s['effective']} (生效日) 13:25-13:30 試搓盤。</li>
-            <li><b>規則：</b> 市值前 40 名「必然納入」；60 名後「必然剔除」。</li>
+            <li>目前為 <b>{ftse_s['status']}</b> 階段。</li>
+            <li>市值前 40 名為必然納入安全區。</li>
         </ul>
     </div>
     """, unsafe_allow_html=True)
@@ -214,26 +301,21 @@ with tab1:
         df_anl = df_mcap.head(100).copy()
         df_anl["in_0050"] = df_anl["股票名稱"].isin(current_0050)
         
-        # 1. 必然列入 (<=40 & Not In)
         must_in = df_anl[(df_anl["排名"] <= 40) & (~df_anl["in_0050"])].copy()
-        # 2. 必然剔除 (>60 & In)
         in_list_stocks = df_mcap[df_mcap["股票名稱"].isin(current_0050)]
         must_out = in_list_stocks[in_list_stocks["排名"] > 60].copy()
-        # 3. 挑戰者 (41~50)
         candidates = df_anl[(df_anl["排名"] > 40) & (df_anl["排名"] <= 50) & (~df_anl["in_0050"])].sort_values("排名").head(3)
 
-        # 準備抓股價的清單
         all_codes = list(must_in["股票代碼"]) + list(candidates["股票代碼"]) + list(must_out["股票代碼"])
         prices = get_stock_info(all_codes)
         
-        # 顯示
         st.subheader("🚀 必然納入 (排名 ≤ 40)")
         if not must_in.empty:
             must_in["現價"] = must_in["股票代碼"].map(lambda x: prices.get(x, "-"))
-            st.success("🔥 強烈買進訊號！符合必然納入標準。")
+            st.success("🔥 強力買進訊號！")
             st.dataframe(must_in[["排名", "股票代碼", "股票名稱", "現價"]], hide_index=True)
         else:
-            st.info("目前無個股符合必然納入標準 (前 40 名皆已在名單內)。")
+            st.info("目前無個股符合必然納入標準。")
             
         st.divider()
 
@@ -251,11 +333,9 @@ with tab1:
             st.subheader("👋 必然剔除 (排名 > 60)")
             if not must_out.empty:
                 must_out["現價"] = must_out["股票代碼"].map(lambda x: prices.get(x, "-"))
-                st.error("⚠️ 預期會有被動賣壓")
                 st.dataframe(must_out[["排名", "股票代碼", "股票名稱", "現價"]], hide_index=True)
             else:
                 st.write("無")
-                
         with col_danger:
             st.subheader("⚠️ 危險邊緣 (41~60)")
             danger = in_list_stocks[(in_list_stocks["排名"] > 40) & (in_list_stocks["排名"] <= 60)].sort_values("排名", ascending=False)
@@ -265,61 +345,3 @@ with tab1:
                 st.write("無")
     else:
         st.warning("無法取得 0050 資料")
-
-# ==========================================
-# Tab 2: MSCI
-# ==========================================
-with tab2:
-    # 策略看板
-    st.markdown(f"""
-    <div style="padding: 15px; background-color: #fff8e6; border-left: 5px solid #fdcb6e; border-radius: 5px; margin-bottom: 20px;">
-        <h4>💡 MSCI 下回調整：{msci_s['next_month']}月</h4>
-        <ul>
-            <li><b>關鍵差異：</b> MSCI 看重「自由流通市值」，非單純總市值。</li>
-            <li><b>高機率納入：</b> 市值衝進前 <b>85</b> 名但尚未納入者，機率極高。</li>
-        </ul>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    if msci_codes:
-        # 邏輯優化：
-        # 1. 高機率納入 (High Probability): Rank <= 85 & Not in MSCI
-        #    (台灣 MSCI 成分股通常在 88~90 檔左右，取 85 是安全邊際)
-        high_prob_in = df_mcap[(df_mcap["排名"] <= 85) & (~df_mcap["股票代碼"].isin(msci_codes))].copy()
-        
-        # 2. 潛在觀察 (Watch list): 86~100 名
-        watch_in = df_mcap[(df_mcap["排名"] > 85) & (df_mcap["排名"] <= 100) & (~df_mcap["股票代碼"].isin(msci_codes))].copy()
-        
-        # 3. 潛在剔除
-        pot_out = df_mcap[(df_mcap["排名"] > 100) & (df_mcap["股票代碼"].isin(msci_codes))].copy()
-
-        # 抓股價
-        target_codes = list(high_prob_in["股票代碼"]) + list(pot_out["股票代碼"])
-        prices = get_stock_info(target_codes)
-
-        # 顯示
-        st.subheader("🔥 高機率納入名單 (排名 ≤ 85)")
-        if not high_prob_in.empty:
-            high_prob_in["現價"] = high_prob_in["股票代碼"].map(lambda x: prices.get(x, "-"))
-            st.success("注意！市值已達 MSCI 安全水位，納入機率高！")
-            st.dataframe(high_prob_in[["排名", "股票代碼", "股票名稱", "現價"]], hide_index=True)
-        else:
-            st.info("目前前 85 名皆已在 MSCI 名單內，無明顯漏網之魚。")
-            
-        st.divider()
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            st.subheader("🚀 邊緣觀察區 (86~100)")
-            st.dataframe(watch_in[["排名", "股票代碼", "股票名稱"]], hide_index=True)
-            
-        with c2:
-            st.subheader("⚠️ 潛在剔除風險 (>100)")
-            if not pot_out.empty:
-                pot_out["現價"] = pot_out["股票代碼"].map(lambda x: prices.get(x, "-"))
-                st.dataframe(pot_out[["排名", "股票代碼", "股票名稱", "現價"]], hide_index=True)
-            else:
-                st.write("目前無明顯剔除風險個股")
-                
-    else:
-        st.warning("無法取得 MSCI 名單")
