@@ -6,7 +6,9 @@ import re
 import io
 import chardet
 from datetime import date, datetime
-
+import urllib3
+# 忽略不安全連線的警告訊息
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # 設定頁面標題與配置
 st.set_page_config(page_title="台股指數調整預測 (MSCI & 0050)", layout="wide")
 
@@ -88,21 +90,23 @@ def fetch_taifex_rankings(limit=200):
 
 @st.cache_data(ttl=3600)
 def fetch_msci_list():
+    @st.cache_data(ttl=3600)
+def fetch_msci_list():
     """抓取 MSCI 成分股"""
     url = "https://stock.capital.com.tw/z/zm/zmd/zmdc.djhtm?MSCI=0"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        # 自動判斷編碼 (通常是 big5)
+        # 注意這裡多了 verify=False
+        resp = requests.get(url, headers=HEADERS, timeout=20, verify=False)
+        
+        # (以下程式碼保持不變...)
         guess = chardet.detect(resp.content)
         encoding = guess['encoding'] if guess['encoding'] else 'cp950'
         html_text = resp.content.decode(encoding, errors="ignore")
         
         codes = set()
-        # Regex 抓取代碼
         for m in re.finditer(r"Link2Stk\('(\d{4})'\)", html_text):
             codes.add(m.group(1))
         
-        # 若 regex 失敗，備用 BS4
         if not codes:
             soup = BeautifulSoup(html_text, "lxml")
             txt = soup.get_text()
@@ -119,14 +123,15 @@ def fetch_0050_holdings():
     """抓取 MoneyDJ 0050 持股"""
     url = "https://www.moneydj.com/ETF/X/Basic/Basic0007a.xdjhtm?etfid=0050.TW"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
+        # 注意這裡多了 verify=False
+        resp = requests.get(url, headers=HEADERS, timeout=20, verify=False)
         resp.encoding = resp.apparent_encoding or "utf-8"
         
+        # (以下程式碼保持不變...)
         dfs = pd.read_html(io.StringIO(resp.text), flavor="lxml")
         all_names = []
         
         for df in dfs:
-            # 清理欄位名稱 (處理 MultiIndex)
             if isinstance(df.columns, pd.MultiIndex):
                 cols = [str(c[-1]).strip() for c in df.columns]
             else:
@@ -134,7 +139,6 @@ def fetch_0050_holdings():
             
             df.columns = cols
             
-            # 尋找「股票名稱」或類似欄位
             target_col = None
             for c in cols:
                 if "名稱" in c:
@@ -145,7 +149,6 @@ def fetch_0050_holdings():
                 names = df[target_col].astype(str).str.strip().tolist()
                 all_names.extend([n for n in names if n != 'nan' and n != ''])
         
-        # 去重並只留前 50 (理論上)
         unique_names = list(set(all_names))
         return pd.DataFrame({"股票名稱": unique_names})
         
