@@ -1,0 +1,9 @@
+streamlit
+pandas
+requests
+beautifulsoup4
+lxml
+openpyxl
+xlsxwriter
+chardet
+html5lib
