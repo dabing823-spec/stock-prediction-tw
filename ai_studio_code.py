@@ -90,8 +90,6 @@ def fetch_taifex_rankings(limit=200):
 
 @st.cache_data(ttl=3600)
 def fetch_msci_list():
-    @st.cache_data(ttl=3600)
-def fetch_msci_list():
     """抓取 MSCI 成分股"""
     url = "https://stock.capital.com.tw/z/zm/zmd/zmdc.djhtm?MSCI=0"
     try:
