@@ -13,7 +13,7 @@ import time
 # -------------------------------------------
 # 1. 基礎設定
 # -------------------------------------------
-st.set_page_config(page_title="台股 ETF 戰情室 (全方位版)", layout="wide")
+st.set_page_config(page_title="台股 ETF 戰情室 (Pro)", layout="wide")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 HEADERS = {
@@ -21,12 +21,11 @@ HEADERS = {
 }
 
 # -------------------------------------------
-# 2. 數據抓取核心 (擴充版)
+# 2. 數據抓取核心
 # -------------------------------------------
 
 @st.cache_data(ttl=3600)
 def fetch_taifex_rankings(limit=200):
-    """抓取期交所市值排名 (擴大到 200 名以涵蓋中型股)"""
     url = "https://www.taifex.com.tw/cht/9/futuresQADetail"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
@@ -47,7 +46,7 @@ def fetch_taifex_rankings(limit=200):
                     name = s; break
             if rank and code and name: rows.append({"排名": rank, "股票代碼": code, "股票名稱": name})
         
-        if not rows: # Fallback
+        if not rows:
             dfs = pd.read_html(io.StringIO(html_text), flavor=["lxml", "html5lib"])
             for df in dfs:
                 cols = "".join([str(c) for c in df.columns])
@@ -78,10 +77,8 @@ def fetch_msci_list():
 
 @st.cache_data(ttl=3600)
 def fetch_etf_holdings(etf_code="0050"):
-    """通用 ETF 成分股抓取 (0050, 0056, 00878, 00919)"""
     url = f"https://www.moneydj.com/ETF/X/Basic/Basic0007a.xdjhtm?etfid={etf_code}.TW"
     try:
-        # 加上隨機延遲避免被擋
         time.sleep(0.5)
         resp = requests.get(url, headers=HEADERS, timeout=20, verify=False)
         resp.encoding = resp.apparent_encoding or "utf-8"
@@ -92,14 +89,13 @@ def fetch_etf_holdings(etf_code="0050"):
             df.columns = cols
             target = next((c for c in cols if "名稱" in c), None)
             if target: names.extend(df[target].astype(str).str.strip().tolist())
-        
         clean_names = list(set([n for n in names if n not in ['nan','']]))
         return clean_names
     except: return []
 
 @st.cache_data(ttl=300)
 def get_advanced_stock_info(codes):
-    """取得量價資訊 (含漲跌、均量判斷)"""
+    """取得量價資訊 (含成交值計算)"""
     if not codes: return {}
     try:
         tickers = " ".join([f"{c}.TW" for c in codes])
@@ -115,6 +111,15 @@ def get_advanced_stock_info(codes):
                     vol = h["Volume"].iloc[-1]
                     avg_vol = h["Volume"].mean()
                     
+                    # 計算成交值 (價格 * 成交量)
+                    turnover = curr_price * vol
+                    
+                    # 格式化成交值
+                    if turnover > 100000000:
+                        turnover_str = f"{turnover/100000000:.1f}億"
+                    else:
+                        turnover_str = f"{turnover/10000:.0f}萬"
+                    
                     change_pct = ((curr_price - prev_price) / prev_price) * 100
                     
                     # 量能訊號
@@ -129,13 +134,15 @@ def get_advanced_stock_info(codes):
                         "現價": f"{curr_price:.2f}",
                         "漲跌": f"{change_pct:+.2f}%",
                         "量能": f"{int(vol/1000)}張 ({vol_status})",
+                        "成交值": turnover_str,
                         "raw_vol": vol,
-                        "raw_change": change_pct
+                        "raw_change": change_pct,
+                        "raw_turnover": turnover
                     }
                 else:
-                    res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "raw_vol": 0, "raw_change": 0}
+                    res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "成交值": "-", "raw_vol": 0, "raw_change": 0, "raw_turnover": 0}
             except:
-                res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "raw_vol": 0, "raw_change": 0}
+                res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "成交值": "-", "raw_vol": 0, "raw_change": 0, "raw_turnover": 0}
         return res
     except: return {}
 
@@ -147,32 +154,48 @@ def enrich_df(df, codes_list):
     info = get_advanced_stock_info(codes_list)
     df["現價"] = df["股票代碼"].map(lambda x: info.get(x, {}).get("現價", "-"))
     df["漲跌幅"] = df["股票代碼"].map(lambda x: info.get(x, {}).get("漲跌", "-"))
-    df["量能狀態"] = df["股票代碼"].map(lambda x: info.get(x, {}).get("量能", "-"))
+    df["成交量"] = df["股票代碼"].map(lambda x: info.get(x, {}).get("量能", "-"))
+    df["成交值"] = df["股票代碼"].map(lambda x: info.get(x, {}).get("成交值", "-"))
+    
+    # 隱藏排序用的 raw data，但保留在 DataFrame 中
+    df["raw_turnover"] = df["股票代碼"].map(lambda x: info.get(x, {}).get("raw_turnover", 0))
+    
+    # 建立 Yahoo 連結 (之後用 column_config 渲染)
+    df["連結代碼"] = df["股票代碼"].apply(lambda x: f"https://tw.stock.yahoo.com/quote/{x}")
     return df
 
 def get_high_yield_schedule():
-    """高股息行事曆"""
     m = date.today().month
     schedules = [
-        {"name": "00878 (國泰)", "adj": [5, 11], "desc": "看重 ESG 與過去配息"},
-        {"name": "0056 (元大)",  "adj": [6, 12], "desc": "預測未來一年殖利率"},
-        {"name": "00919 (群益)", "adj": [5, 12], "desc": "精準高息 (看已宣告)"}
+        {"name": "00878 (國泰)", "adj": [5, 11]},
+        {"name": "0056 (元大)",  "adj": [6, 12]},
+        {"name": "00919 (群益)", "adj": [5, 12]}
     ]
     active = [s for s in schedules if m in s["adj"]]
-    return active, schedules
+    return active
+
+# 顯示設定 (共用)
+column_cfg = {
+    "連結代碼": st.column_config.LinkColumn(
+        "代號", 
+        display_text=r"https://tw\.stock\.yahoo\.com/quote/(\d+)", # Regex 提取代碼顯示
+        help="點擊查看 Yahoo 個股資訊"
+    ),
+    "raw_turnover": None, # 隱藏
+    "raw_vol": None,
+    "raw_change": None
+}
 
 # -------------------------------------------
 # 4. 主程式
 # -------------------------------------------
-st.title("📈 台股 ETF 戰情室 (全方位版)")
-st.caption("涵蓋：0050 (權值) | MSCI (外資) | 00878/0056/00919 (高股息中型)")
+st.title("📈 台股 ETF 戰情室 (Pro)")
+st.caption("點擊代號可連結至 Yahoo 股市 | 涵蓋 0050, MSCI, 高股息中型股")
 
-# --- 資料準備 ---
-with st.spinner("正在掃描全市場與各大 ETF 持股..."):
+with st.spinner("正在掃描全市場量價與資金流向..."):
     df_mcap = fetch_taifex_rankings(limit=200)
     msci_codes = fetch_msci_list()
     
-    # 抓取各大 ETF 成分股 (用來標記)
     holdings = {}
     for etf in ["0050", "0056", "00878", "00919"]:
         holdings[etf] = set(fetch_etf_holdings(etf))
@@ -180,132 +203,111 @@ with st.spinner("正在掃描全市場與各大 ETF 持股..."):
     if df_mcap.empty:
         st.error("無法取得市值排名"); st.stop()
 
-# --- 側邊欄 ---
+# 側邊欄
 with st.sidebar:
     st.header("🗓️ 調整行事曆")
-    active_hy, all_hy = get_high_yield_schedule()
-    
+    active_hy = get_high_yield_schedule()
     if active_hy:
-        st.error(f"🔥 本月 ({date.today().month}月) 重點戰場")
-        for h in active_hy:
-            st.write(f"● **{h['name']}**")
+        st.error(f"🔥 本月重點: {', '.join([h['name'] for h in active_hy])}")
     else:
-        st.info(f"本月 ({date.today().month}月) 無大型高股息調整")
-        st.markdown("**下波預告：**")
-        st.text("12月: 0056, 00919")
-        
+        st.info("本月無大型高股息調整")
+        st.text("下波: 12月 (0056, 00919)")
+    
     st.divider()
-    st.write("**資料最後更新:**", datetime.now().strftime("%H:%M"))
     if st.button("🔄 更新行情"):
         st.cache_data.clear()
         st.rerun()
 
-# --- 分頁 ---
 tab1, tab2, tab3 = st.tabs(["🇹🇼 0050 權值對決", "🌍 MSCI 外資對決", "💰 高股息/中型 100"])
 
 # ==================================================
-# Tab 1: 0050 (明確納入 vs 剔除)
+# Tab 1: 0050
 # ==================================================
 with tab1:
-    st.markdown("### 0050 調整預測 (市值前 50 大)")
+    st.markdown("### 0050 調整預測")
     if holdings["0050"]:
         df_anl = df_mcap.head(100).copy()
         df_anl["in_0050"] = df_anl["股票名稱"].isin(holdings["0050"])
         
-        # 1. 納入候選 (Rank <= 40 or 41-50)
         must_in = df_anl[(df_anl["排名"] <= 40) & (~df_anl["in_0050"])]
         candidate_in = df_anl[(df_anl["排名"] > 40) & (df_anl["排名"] <= 50) & (~df_anl["in_0050"])]
         
-        # 2. 剔除候選 (Rank > 60 or 41-60)
-        # 需從完整清單找在 0050 內的人
         in_list = df_mcap[df_mcap["股票名稱"].isin(holdings["0050"])]
         must_out = in_list[in_list["排名"] > 60]
         danger_out = in_list[(in_list["排名"] > 40) & (in_list["排名"] <= 60)].sort_values("排名", ascending=False)
         
-        # 準備抓行情
-        codes = list(must_in["股票代碼"]) + list(candidate_in["股票代碼"]) + list(must_out["股票代碼"]) + list(danger_out["股票代碼"])
+        all_codes = list(must_in["股票代碼"]) + list(candidate_in["股票代碼"]) + list(must_out["股票代碼"]) + list(danger_out["股票代碼"])
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.success("🟢 **潛在納入區 (買進訊號)**")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.success("🟢 **潛在納入區**")
             if not must_in.empty:
-                st.markdown("**🔥 必然納入 (排名 ≤ 40)**")
-                st.dataframe(enrich_df(must_in, codes)[["排名","股票名稱","現價","漲跌幅","量能狀態"]], hide_index=True)
+                st.markdown("**🔥 必然納入 (Rank ≤ 40)**")
+                df_show = enrich_df(must_in, all_codes)
+                st.dataframe(df_show[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
             
             if not candidate_in.empty:
-                st.markdown("**⚔️ 關鍵挑戰者 (排名 41-50)**")
-                st.dataframe(enrich_df(candidate_in, codes)[["排名","股票名稱","現價","漲跌幅","量能狀態"]], hide_index=True)
-            
-            if must_in.empty and candidate_in.empty:
-                st.info("前 50 名皆已在名單內，無潛在納入者。")
+                st.markdown("**⚔️ 關鍵挑戰者 (Rank 41-50)**")
+                df_show = enrich_df(candidate_in, all_codes)
+                st.dataframe(df_show[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
 
-        with col2:
-            st.error("🔴 **潛在剔除區 (賣出訊號)**")
+        with c2:
+            st.error("🔴 **潛在剔除區**")
             if not must_out.empty:
-                st.markdown("**👋 必然剔除 (排名 > 60)**")
-                st.dataframe(enrich_df(must_out, codes)[["排名","股票名稱","現價","漲跌幅","量能狀態"]], hide_index=True)
-                
+                st.markdown("**👋 必然剔除 (Rank > 60)**")
+                df_show = enrich_df(must_out, all_codes)
+                st.dataframe(df_show[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+            
             if not danger_out.empty:
-                st.markdown("**⚠️ 危險邊緣 (排名 41-60)**")
-                st.dataframe(enrich_df(danger_out, codes)[["排名","股票名稱","現價","漲跌幅","量能狀態"]], hide_index=True)
-
+                st.markdown("**⚠️ 危險邊緣 (Rank 41-60)**")
+                df_show = enrich_df(danger_out, all_codes)
+                st.dataframe(df_show[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
     else:
-        st.warning("無法取得 0050 成分股")
+        st.warning("0050 資料讀取失敗")
 
 # ==================================================
-# Tab 2: MSCI (明確納入 vs 剔除)
+# Tab 2: MSCI
 # ==================================================
 with tab2:
-    st.markdown("### MSCI 調整預測 (市值前 100 大)")
+    st.markdown("### MSCI 調整預測")
     if msci_codes:
-        # 1. 納入 (Rank <= 85)
         prob_in = df_mcap[(df_mcap["排名"] <= 85) & (~df_mcap["股票代碼"].isin(msci_codes))]
         watch_in = df_mcap[(df_mcap["排名"] > 85) & (df_mcap["排名"] <= 100) & (~df_mcap["股票代碼"].isin(msci_codes))]
-        
-        # 2. 剔除 (Rank > 100)
         prob_out = df_mcap[(df_mcap["排名"] > 100) & (df_mcap["股票代碼"].isin(msci_codes))]
         
-        codes = list(prob_in["股票代碼"]) + list(watch_in["股票代碼"]) + list(prob_out["股票代碼"])
+        all_codes = list(prob_in["股票代碼"]) + list(watch_in["股票代碼"]) + list(prob_out["股票代碼"])
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.success("🟢 **潛在納入區 (外資買盤)**")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.success("🟢 **潛在納入區**")
             if not prob_in.empty:
-                st.markdown("**🔥 高機率納入 (排名 ≤ 85)**")
-                st.dataframe(enrich_df(prob_in, codes)[["排名","股票名稱","現價","漲跌幅","量能狀態"]], hide_index=True)
-            else:
-                st.write("前 85 名皆已納入。")
-                
+                st.markdown("**🔥 高機率納入 (Rank ≤ 85)**")
+                df_show = enrich_df(prob_in, all_codes)
+                st.dataframe(df_show[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+            
             if not watch_in.empty:
-                st.markdown("**🧐 邊緣觀察 (排名 86-100)**")
-                st.dataframe(enrich_df(watch_in, codes)[["排名","股票名稱","現價","漲跌幅","量能狀態"]], hide_index=True)
+                st.markdown("**🧐 邊緣觀察 (Rank 86-100)**")
+                df_show = enrich_df(watch_in, all_codes)
+                st.dataframe(df_show[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
 
-        with col2:
-            st.error("🔴 **潛在剔除區 (外資賣盤)**")
+        with c2:
+            st.error("🔴 **潛在剔除區**")
             if not prob_out.empty:
-                st.markdown("**👋 潛在剔除 (排名 > 100)**")
-                st.dataframe(enrich_df(prob_out, codes)[["排名","股票名稱","現價","漲跌幅","量能狀態"]], hide_index=True)
-            else:
-                st.write("目前成分股排名皆在 100 名內。")
+                st.markdown("**👋 潛在剔除 (Rank > 100)**")
+                df_show = enrich_df(prob_out, all_codes)
+                st.dataframe(df_show[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
     else:
-        st.warning("無法取得 MSCI 名單")
+        st.warning("MSCI 資料讀取失敗")
 
 # ==================================================
-# Tab 3: 高股息/中型 100 (新增功能)
+# Tab 3: 高股息/中型 100
 # ==================================================
 with tab3:
-    st.markdown("""
-    ### 💰 高股息/中型股戰場 (00878, 0056, 00919)
-    **邏輯：** 這些 ETF 主要從 **市值前 150 大** 的股票中，挑選殖利率高的。
-    **策略：** 關注排名 **50~150 名** 的股票。若該月有 ETF 調整，且某檔股票**成交量放大、股價上漲**，極可能是被納入的目標。
-    """)
+    st.markdown("### 💰 高股息/中型股戰場")
+    st.markdown("鎖定 **市值 50~150 名**，結合 **資金熱度 (成交值)** 判斷。")
     
-    # 1. 篩選中型股 (Rank 50-150)
     mid_cap = df_mcap[(df_mcap["排名"] >= 50) & (df_mcap["排名"] <= 150)].copy()
     
-    # 2. 標記目前是否已在這些 ETF 中 (避免重複推薦)
     def check_status(name):
         tags = []
         if name in holdings["0056"]: tags.append("0056")
@@ -315,37 +317,43 @@ with tab3:
     
     mid_cap["已入選 ETF"] = mid_cap["股票名稱"].apply(check_status)
     
-    # 3. 取得行情
+    # 抓取行情
     codes = list(mid_cap["股票代碼"])
     info = get_advanced_stock_info(codes)
     
-    # 4. 整合資料
     mid_cap["現價"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("現價", "-"))
     mid_cap["漲跌幅"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("漲跌", "-"))
-    mid_cap["量能狀態"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("量能", "-"))
+    mid_cap["成交量"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("量能", "-"))
+    mid_cap["成交值"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("成交值", "-"))
+    
+    # 用來排序的數值
+    mid_cap["raw_turnover"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("raw_turnover", 0))
     mid_cap["raw_vol"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("raw_vol", 0))
     mid_cap["raw_change"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("raw_change", 0))
+    
+    # 連結
+    mid_cap["連結代碼"] = mid_cap["股票代碼"].apply(lambda x: f"https://tw.stock.yahoo.com/quote/{x}")
 
-    # 5. 篩選器 (互動功能)
+    # 篩選與排序
     c1, c2 = st.columns([1, 2])
     with c1:
-        filter_type = st.radio("篩選重點：", ["🔥 量能爆發 (有人在買)", "🚀 股價強勢 (漲幅高)", "💎 尚未入選 (潛在黑馬)"])
+        sort_method = st.radio("排序依據：", ["💰 資金熱度 (成交值)", "🔥 量能爆發 (成交量)", "🚀 股價強勢 (漲跌幅)", "💎 尚未入選 (挖寶)"])
     
     with c2:
-        st.info("💡 提示：找「量能爆發」且「尚未入選」的股票，配合該股殖利率(需另查)，命中率最高。")
+        st.info("💡 點擊表格內的「代號」可直接跳轉 Yahoo 股市。")
 
-    # 根據篩選顯示
-    if filter_type == "🔥 量能爆發 (有人在買)":
-        # 找成交量大於 0 且依量排序
-        display_df = mid_cap.sort_values("raw_vol", ascending=False).head(20)
-    elif filter_type == "🚀 股價強勢 (漲幅高)":
-        display_df = mid_cap.sort_values("raw_change", ascending=False).head(20)
+    if sort_method == "💰 資金熱度 (成交值)":
+        df_show = mid_cap.sort_values("raw_turnover", ascending=False).head(30)
+    elif sort_method == "🔥 量能爆發 (成交量)":
+        df_show = mid_cap.sort_values("raw_vol", ascending=False).head(30)
+    elif sort_method == "🚀 股價強勢 (漲跌幅)":
+        df_show = mid_cap.sort_values("raw_change", ascending=False).head(30)
     else:
-        # 找還沒被這三檔 ETF 選中，且排名靠前的
-        display_df = mid_cap[mid_cap["已入選 ETF"] == "-"].sort_values("排名").head(20)
+        df_show = mid_cap[mid_cap["已入選 ETF"] == "-"].sort_values("排名").head(30)
 
     st.dataframe(
-        display_df[["排名", "股票名稱", "已入選 ETF", "現價", "漲跌幅", "量能狀態"]],
+        df_show[["排名", "連結代碼", "股票名稱", "已入選 ETF", "現價", "成交值", "漲跌幅", "成交量"]],
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
+        column_config=column_cfg
     )
