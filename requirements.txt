@@ -7,3 +7,4 @@ openpyxl
 xlsxwriter
 chardet
 html5lib
+yfinance
