@@ -16,7 +16,7 @@ import time
 st.set_page_config(page_title="台股 ETF 戰情室 (操盤旗艦版)", layout="wide")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 自定義 CSS (深色模式優化 + 策略框風格)
+# 自定義 CSS
 st.markdown("""
 <style>
     .metric-card {
@@ -48,7 +48,7 @@ HEADERS = {
 }
 
 # -------------------------------------------
-# 2. 大盤環境指標 (保留您的需求)
+# 2. 大盤環境指標
 # -------------------------------------------
 @st.cache_data(ttl=300)
 def get_market_indicators():
@@ -74,16 +74,12 @@ def get_market_indicators():
             indicators["TWII"] = {"val": int(curr), "status": " | ".join(status_list)}
         else: indicators["TWII"] = {"val": "-", "status": "無法取得"}
         
-        # CNN & 融資 (固定連結/文字)
-        indicators["CNN"] = "情緒指標"
-        indicators["Margin"] = "融資維持率"
-        
     except: 
         indicators = {"VIX": {"val":"-", "delta":0}, "TWII": {"val":"-", "status":"-"}}
     return indicators
 
 # -------------------------------------------
-# 3. 數據抓取核心 (保留 v4.1 的完整功能)
+# 3. 數據抓取核心
 # -------------------------------------------
 
 @st.cache_data(ttl=3600)
@@ -262,10 +258,15 @@ with col3:
     </div>""", unsafe_allow_html=True)
 
 with col4:
+    # 更新連結為財經M平方
     st.markdown(f"""
     <div class="metric-card" style="border-left-color: #9b59b6;">
-        <div class="metric-label">📊 融資維持率 (>155%安全)</div>
-        <div class="metric-value" style="font-size:16px; padding-top:4px;"><a href="https://goodinfo.tw/tw/StockMarketSummary.asp" target="_blank" style="color:#fff;">Goodinfo 查詢</a></div>
+        <div class="metric-label">📊 融資維持率 (大盤多空)</div>
+        <div class="metric-value" style="font-size:16px; padding-top:4px;">
+            <a href="https://www.macromicro.me/charts/53117/taiwan-taiex-maintenance-margin" target="_blank" style="color:#fff;">
+            財經M平方 查詢
+            </a>
+        </div>
     </div>""", unsafe_allow_html=True)
 
 st.divider()
@@ -296,14 +297,13 @@ with st.sidebar:
         st.rerun()
     st.caption(f"Update: {datetime.now().strftime('%H:%M')}")
 
-# --- C. 戰情室分頁 (恢復表格模式) ---
+# --- C. 戰情室分頁 ---
 tab1, tab2, tab3 = st.tabs(["🇹🇼 0050 權值對決", "🌍 MSCI 外資對決", "💰 高股息/中型 100"])
 
 # ==================================================
-# Tab 1: 0050 (恢復完整表格與操作 SOP)
+# Tab 1: 0050
 # ==================================================
 with tab1:
-    # 策略 SOP (視覺化)
     st.markdown("""
     <div class="strategy-box">
         <div class="strategy-title">📜 0050 吃豆腐操作 SOP</div>
@@ -352,7 +352,7 @@ with tab1:
         st.warning("0050 資料讀取失敗")
 
 # ==================================================
-# Tab 2: MSCI (恢復完整表格)
+# Tab 2: MSCI
 # ==================================================
 with tab2:
     st.markdown("""
@@ -392,7 +392,7 @@ with tab2:
         st.warning("MSCI 資料讀取失敗")
 
 # ==================================================
-# Tab 3: 高股息/中型 100 (恢復完整篩選器)
+# Tab 3: 高股息/中型 100
 # ==================================================
 with tab3:
     st.markdown("""
