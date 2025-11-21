@@ -13,7 +13,7 @@ import time
 # -------------------------------------------
 # 1. 基礎設定 & CSS
 # -------------------------------------------
-st.set_page_config(page_title="台股 ETF 戰情室 (操盤旗艦版)", layout="wide")
+st.set_page_config(page_title="台股 ETF 戰情室 ", layout="wide")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 自定義 CSS
