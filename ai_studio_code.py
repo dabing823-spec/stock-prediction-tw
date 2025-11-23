@@ -467,4 +467,39 @@ with tab3:
     df_show = enrich_df(mid_cap, codes)
     
     if "殖利率" in sort_method: df_show = df_show.sort_values("raw_yield", ascending=False).head(30)
-    elif "量能" in sort_method:
+    elif "量能" in sort_method: df_show = df_show.sort_values("raw_vol", ascending=False).head(30)
+    else: df_show = df_show[df_show["已入選 ETF"] == ""].sort_values("排名").head(30)
+    
+    st.dataframe(df_show[["排名","連結代碼","股票名稱","殖利率(%)","已入選 ETF","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+
+# Tab 4: 全市場權重
+with tab4:
+    st.markdown("""<div class="strategy-box"><div class="strategy-title">📊 全市場市值權重排行 (Top 150)</div><div class="strategy-list">台股多空地圖。前 150 檔佔大盤 90% 市值。</div></div>""", unsafe_allow_html=True)
+    top150 = df_mcap.head(150).copy()
+    codes = list(top150["股票代碼"])
+    with st.spinner("計算權重中..."):
+        df_150 = enrich_df(top150, codes, add_weight=True)
+    st.dataframe(df_150[["排名","連結代碼","股票名稱","權重(Top150)","總市值","現價","成交值","漲跌幅"]], hide_index=True, column_config=column_cfg)
+
+# Tab 5: 傳產/金融 Alpha 策略 (Auto-Search)
+with tab5:
+    st.markdown("""<div class="strategy-box"><div class="strategy-title">🏗️ 傳產/金融 Alpha 對沖策略 (自動篩選)</div><div class="strategy-list"><b>邏輯：</b> 電子股資金佔比過高時，利用「非電族群」龍頭股做多，同時放空大盤避險。<br><b>運作方式：</b> 程式自動掃描 <b>Top 50 市值</b>，剔除電子股，計算權重。</div></div>""", unsafe_allow_html=True)
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        capital = st.number_input("總投資金額 (TWD)", min_value=100000, value=1000000, step=50000)
+        hedge_ratio = st.slider("多空比率 (Long/Short Ratio)", 0.8, 1.5, 1.0, 0.1)
+        st.info(f"💡 每買 {int(capital):,} 元股票，需放空約 {int(capital/hedge_ratio):,} 元期貨。")
+    with c2:
+        with st.spinner("正在篩選非電子龍頭股..."):
+            ai_df, short_info, debug_df = calculate_non_tech_alpha_portfolio(capital, hedge_ratio, df_mcap)
+    
+    if ai_df is not None and short_info is not None:
+        col_long, col_short = st.columns(2)
+        with col_long:
+            st.markdown(f"### 🟢 多方部位 (現貨: ${int(capital):,})")
+            st.dataframe(ai_df[["股票名稱", "Sector", "連結代碼", "現價", "配置權重(%)", "分配金額", "建議買進(股)"]], hide_index=True, column_config=column_cfg)
+            with st.expander("查看原始產業分類 (Debug)"):
+                st.dataframe(debug_df, hide_index=True)
+        with col_short:
+            st.markdown(f"### 🔴 空方部位 (期貨: ${short_info['short_value']:,})")
+            st.markdown(f"""<div class="alpha-short"><h4>避險標的：微台 (TMF)</h4><ul><li>當前指數：<b>{short_info['index_price']}</b></li><li>合約價值：<b>${short_info['micro_val']:,}</b></li><li>建議放空：<b style='color:#ff7675; font-size:24px;'>{short_info['contracts']} 口</b></li></ul></div>""", unsafe_allow_html=True)
