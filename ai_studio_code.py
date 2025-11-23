@@ -13,7 +13,7 @@ import time
 # -------------------------------------------
 # 1. 基礎設定 & CSS
 # -------------------------------------------
-st.set_page_config(page_title="台股 ETF 戰情室 (實戰版)", layout="wide")
+st.set_page_config(page_title="台股 ETF 戰情室 (修正版)", layout="wide")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 自定義 CSS
@@ -149,10 +149,14 @@ def fetch_etf_holdings(etf_code="0050"):
         return list(set([n for n in names if n not in ['nan','']]))
     except: return []
 
-# --- 專門抓殖利率 (Cache 24小時) ---
+# --- 修正後的殖利率抓取 (Trailling Yield) ---
 @st.cache_data(ttl=86400)
 def get_dividend_yield_batch(codes):
-    """使用 yfinance 抓取殖利率"""
+    """
+    使用 yfinance 抓取殖利率。
+    修正重點：優先使用 trailingAnnualDividendYield (過去一年實際)，
+    避免 dividendYield (預估) 因為一次性股利而爆表。
+    """
     if not codes: return {}
     data = {}
     tickers_str = " ".join([f"{c}.TW" for c in codes])
@@ -161,8 +165,17 @@ def get_dividend_yield_batch(codes):
         for c in codes:
             try:
                 info = tickers.tickers[f"{c}.TW"].info
-                # 取得殖利率 (若無資料則為 None)
-                dy = info.get('dividendYield', 0)
+                
+                # 1. 優先抓取【過去一年實際配息率】(Trailing) -> 最準
+                dy = info.get('trailingAnnualDividendYield')
+                
+                # 2. 如果沒有，才抓【預估配息率】(Forward)，並進行防呆
+                if dy is None:
+                    dy = info.get('dividendYield')
+                    # 防呆：如果預估值 > 20% (0.2)，極可能是錯誤推估，改為 0 或顯示異常
+                    if dy and dy > 0.2:
+                        dy = 0 
+                
                 if dy is not None:
                     data[c] = dy * 100 # 轉為百分比
                 else:
@@ -369,7 +382,7 @@ with tab2:
             st.error("🔴 **潛在剔除 (外資賣盤)**")
             if not prob_out.empty: st.dataframe(enrich_df(prob_out, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
 
-# Tab 3: 0056 (加入殖利率)
+# Tab 3: 0056 (修正殖利率)
 with tab3:
     st.markdown("""
     <div class="strategy-box">
@@ -395,7 +408,6 @@ with tab3:
     
     sort_method = st.radio("🔍 掃描模式：", ["💰 殖利率排行 (抓高息)", "🔥 量能爆發 (抓偷跑)", "💎 尚未入選 (抓遺珠)"])
     
-    # 資料豐富化
     df_show = enrich_df(mid_cap, codes)
     
     if "殖利率" in sort_method: df_show = df_show.sort_values("raw_yield", ascending=False).head(30)
