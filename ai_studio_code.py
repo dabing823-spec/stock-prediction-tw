@@ -9,11 +9,12 @@ from datetime import date, datetime
 import urllib3
 import yfinance as yf
 import time
+import numpy as np
 
 # -------------------------------------------
 # 1. 基礎設定 & CSS
 # -------------------------------------------
-st.set_page_config(page_title="台股 ETF 戰情室 (修正版)", layout="wide")
+st.set_page_config(page_title="台股 ETF 戰情室 (全攻略版)", layout="wide")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 自定義 CSS
@@ -42,6 +43,10 @@ st.markdown("""
     .strategy-highlight { color: #ff7675; font-weight: bold; }
     .buy-signal { color: #55efc4; font-weight: bold; }
     .sell-signal { color: #ff7675; font-weight: bold; }
+    
+    /* Alpha 策略專用 */
+    .alpha-long { border-left: 4px solid #55efc4; background-color: #2d3436; padding: 10px; border-radius: 5px;}
+    .alpha-short { border-left: 4px solid #ff7675; background-color: #2d3436; padding: 10px; border-radius: 5px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -149,14 +154,8 @@ def fetch_etf_holdings(etf_code="0050"):
         return list(set([n for n in names if n not in ['nan','']]))
     except: return []
 
-# --- 修正後的殖利率抓取 (Trailling Yield) ---
 @st.cache_data(ttl=86400)
 def get_dividend_yield_batch(codes):
-    """
-    使用 yfinance 抓取殖利率。
-    修正重點：優先使用 trailingAnnualDividendYield (過去一年實際)，
-    避免 dividendYield (預估) 因為一次性股利而爆表。
-    """
     if not codes: return {}
     data = {}
     tickers_str = " ".join([f"{c}.TW" for c in codes])
@@ -165,29 +164,18 @@ def get_dividend_yield_batch(codes):
         for c in codes:
             try:
                 info = tickers.tickers[f"{c}.TW"].info
-                
-                # 1. 優先抓取【過去一年實際配息率】(Trailing) -> 最準
                 dy = info.get('trailingAnnualDividendYield')
-                
-                # 2. 如果沒有，才抓【預估配息率】(Forward)，並進行防呆
                 if dy is None:
                     dy = info.get('dividendYield')
-                    # 防呆：如果預估值 > 20% (0.2)，極可能是錯誤推估，改為 0 或顯示異常
-                    if dy and dy > 0.2:
-                        dy = 0 
-                
-                if dy is not None:
-                    data[c] = dy * 100 # 轉為百分比
-                else:
-                    data[c] = 0
-            except:
-                data[c] = 0
+                    if dy and dy > 0.2: dy = 0 
+                if dy is not None: data[c] = dy * 100
+                else: data[c] = 0
+            except: data[c] = 0
         return data
     except: return {}
 
 @st.cache_data(ttl=300)
 def get_advanced_stock_info(codes):
-    """取得量價資訊 (含成交值計算)"""
     if not codes: return {}
     try:
         tickers = " ".join([f"{c}.TW" for c in codes])
@@ -209,9 +197,7 @@ def get_advanced_stock_info(codes):
                     
                     change_pct = ((curr_price - prev_price) / prev_price) * 100
                     
-                    if vol > (avg_vol * 2) and vol > 1000: vol_status = "🔥爆量"
-                    elif vol < (avg_vol * 0.6): vol_status = "💧縮量"
-                    else: vol_status = "➖正常"
+                    vol_status = "🔥爆量" if (vol > avg_vol * 2 and vol > 1000) else "💧縮量" if vol < avg_vol * 0.6 else "➖正常"
                     
                     res[c] = {
                         "現價": f"{curr_price:.2f}",
@@ -220,18 +206,18 @@ def get_advanced_stock_info(codes):
                         "成交值": turnover_str,
                         "raw_vol": vol,
                         "raw_change": change_pct,
-                        "raw_turnover": turnover
+                        "raw_turnover": turnover,
+                        "raw_price": curr_price
                     }
                 else:
-                    res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "成交值": "-", "raw_vol": 0, "raw_change": 0, "raw_turnover": 0}
+                    res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "成交值": "-", "raw_vol": 0, "raw_change": 0, "raw_turnover": 0, "raw_price": 0}
             except:
-                res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "成交值": "-", "raw_vol": 0, "raw_change": 0, "raw_turnover": 0}
+                res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "成交值": "-", "raw_vol": 0, "raw_change": 0, "raw_turnover": 0, "raw_price": 0}
         return res
     except: return {}
 
 @st.cache_data(ttl=3600)
 def calculate_market_weights(codes):
-    """計算權重 (Tab 4)"""
     if not codes: return {}
     try:
         mcap_data = {}
@@ -246,7 +232,7 @@ def calculate_market_weights(codes):
         res = {}
         for c, mcap in mcap_data.items():
             w = (mcap/total)*100 if total > 0 else 0
-            res[c] = {"市值": f"{mcap/100000000:.0f}億", "權重": f"{w:.2f}%"}
+            res[c] = {"市值": f"{mcap/100000000:.0f}億", "權重": f"{w:.2f}%", "raw_mcap": mcap}
         return res
     except: return {}
 
@@ -283,11 +269,68 @@ column_cfg = {
     "raw_turnover": None, "raw_vol": None, "raw_yield": None
 }
 
+# --- AI Alpha 策略專用 ---
+def calculate_ai_alpha_portfolio(total_capital, hedge_ratio, ai_codes, df_mcap):
+    # 1. 篩選出 AI 概念股
+    ai_df = df_mcap[df_mcap["股票代碼"].isin(ai_codes)].copy()
+    
+    if ai_df.empty: return None, None
+    
+    # 2. 計算權重 (基於市值)
+    # 取得市值數據
+    weight_info = calculate_market_weights(ai_codes)
+    ai_df["raw_mcap"] = ai_df["股票代碼"].map(lambda x: weight_info.get(x, {}).get("raw_mcap", 0))
+    
+    total_mcap = ai_df["raw_mcap"].sum()
+    if total_mcap == 0: return None, None
+    
+    ai_df["配置權重(%)"] = (ai_df["raw_mcap"] / total_mcap)
+    
+    # 3. 計算多方部位
+    # 取得目前股價
+    price_info = get_advanced_stock_info(ai_codes)
+    ai_df["現價"] = ai_df["股票代碼"].map(lambda x: price_info.get(x, {}).get("raw_price", 0))
+    
+    ai_df["分配金額"] = total_capital * ai_df["配置權重(%)"]
+    
+    # 計算股數 (取整股)
+    ai_df["建議買進(股)"] = (ai_df["分配金額"] / ai_df["現價"]).fillna(0).astype(int)
+    
+    # 調整顯示
+    ai_df["配置權重(%)"] = (ai_df["配置權重(%)"] * 100).map(lambda x: f"{x:.2f}%")
+    ai_df["分配金額"] = ai_df["分配金額"].map(lambda x: f"${int(x):,}")
+    
+    # 4. 計算空方部位 (避險)
+    # 取得大盤指數
+    try:
+        twii_price = yf.Ticker("^TWII").history(period="1d")["Close"].iloc[-1]
+    except:
+        twii_price = 23000 # fallback
+        
+    short_target = total_capital / hedge_ratio # 若 hedge_ratio=1.1 (多1.1:空1), 則空單金額 = 本金/1.1 (或是另一種邏輯: 本金為多單金額，空單金額調整)
+    # 修正邏輯：使用者輸入的是「本金」(做多金額)，我們計算需要多少空單來對沖
+    # 假設 Hedge Ratio = 多方 / 空方. 若 Ratio = 1.1 (看多), 空方 = 多方 / 1.1
+    
+    short_value_needed = total_capital / hedge_ratio
+    
+    # 微台合約價值 = 指數 * 10
+    micro_contract_val = twii_price * 10
+    num_micro = short_value_needed / micro_contract_val
+    
+    short_info = {
+        "index_price": int(twii_price),
+        "micro_val": int(micro_contract_val),
+        "short_value": int(short_value_needed),
+        "contracts": round(num_micro, 1)
+    }
+    
+    return ai_df, short_info
+
 # -------------------------------------------
 # 5. 主程式 UI
 # -------------------------------------------
-st.title("🚀 台股 ETF 戰情室 (實戰版)")
-st.caption("0050 | MSCI | 高股息 | 全市場權重")
+st.title("🚀 台股 ETF 戰情室 (全攻略版)")
+st.caption("0050 | MSCI | 高股息 | Alpha 對沖策略")
 
 m_inds = get_market_indicators()
 col1, col2, col3, col4 = st.columns(4)
@@ -324,7 +367,7 @@ with st.sidebar:
     if st.button("🔄 更新行情"): st.cache_data.clear(); st.rerun()
     st.caption(f"Update: {datetime.now().strftime('%H:%M')}")
 
-tab1, tab2, tab3, tab4 = st.tabs(["🇹🇼 0050 權值", "🌍 MSCI 外資", "💰 0056 高股息", "📊 全市場權重(Top150)"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🇹🇼 0050 權值", "🌍 MSCI 外資", "💰 0056 高股息", "📊 全市場權重", "🤖 AI Alpha 對沖"])
 
 # Tab 1: 0050
 with tab1:
@@ -332,11 +375,10 @@ with tab1:
     <div class="strategy-box">
         <div class="strategy-title">📜 0050 吃豆腐戰法 (SOP)</div>
         <div class="strategy-list">
-            1. <b>核心邏輯：</b> 市值前 40 名必定納入。我們利用「市值排名」提前預測。<br>
-            2. <b>進場時機 (佈局期)：</b> <span class="buy-signal">公告前 1 個月</span>。掃描下方左側「潛在納入」股 (Rank ≤ 40 但未入選)。<br>
-            3. <b>出場時機 (收割期)：</b> <span class="sell-signal">生效日當天 13:30 (最後一盤)</span>。<br>
-            4. <b>操作細節：</b> 生效日尾盤掛 <span class="strategy-highlight">「跌停價」</span> 賣出 (確保 100% 倒貨給 ETF)。<br>
-            5. <b>避險：</b> 若公告前股價漲幅 > 20%，勿追。
+            1. <b>核心邏輯：</b> 市值前 40 名必定納入。利用「市值排名」提前預測。<br>
+            2. <b>進場時機：</b> <span class="buy-signal">公告前 1 個月</span>。掃描下方 Rank ≤ 40 但未入選者。<br>
+            3. <b>出場時機：</b> <span class="sell-signal">生效日當天 13:30</span>。掛「跌停價」倒貨給 ETF。<br>
+            4. <b>避險：</b> 若公告前漲幅 > 20%，勿追。
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -361,11 +403,10 @@ with tab2:
     <div class="strategy-box">
         <div class="strategy-title">📜 MSCI 波動戰法 (SOP)</div>
         <div class="strategy-list">
-            1. <b>核心邏輯：</b> 追蹤全球資金流向，重點在「生效日尾盤爆量」。<br>
-            2. <b>進場時機 (佈局期)：</b> <span class="buy-signal">公布日早晨 (開盤)</span>。搶進意外黑馬。<br>
-            3. <b>出場時機 (收割期)：</b> <span class="sell-signal">生效日 13:30 (最後一盤)</span>。<br>
-            4. <b>操作細節：</b> 若持有納入股，當天盤中不賣，等到 13:25 掛 <span class="strategy-highlight">「跌停價」</span> 賣出。<br>
-            5. <b>避險：</b> 右側「剔除區」股票勿輕易接刀。
+            1. <b>核心邏輯：</b> 追蹤全球資金流，重點在「生效日尾盤爆量」。<br>
+            2. <b>進場時機：</b> <span class="buy-signal">公布日早晨</span>。搶進意外黑馬。<br>
+            3. <b>出場時機：</b> <span class="sell-signal">生效日 13:30</span>。掛「跌停價」賣出。<br>
+            4. <b>避險：</b> 右側「剔除區」勿輕易接刀。
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -376,22 +417,22 @@ with tab2:
         
         c1, c2 = st.columns(2)
         with c1:
-            st.success("🟢 **潛在納入 (外資買盤)**")
+            st.success("🟢 **潛在納入**")
             if not prob_in.empty: st.dataframe(enrich_df(prob_in, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
         with c2:
-            st.error("🔴 **潛在剔除 (外資賣盤)**")
+            st.error("🔴 **潛在剔除**")
             if not prob_out.empty: st.dataframe(enrich_df(prob_out, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
 
-# Tab 3: 0056 (修正殖利率)
+# Tab 3: 0056
 with tab3:
     st.markdown("""
     <div class="strategy-box">
-        <div class="strategy-title">📜 0056 高股息 ETF 操作戰法 (元大投信官方邏輯版)</div>
+        <div class="strategy-title">📜 0056 高股息戰法 (元大官方邏輯)</div>
         <div class="strategy-list">
-            1. <b>選股池：</b> 市值前 150 大 (台股50 + 中型100)。<br>
-            2. <b>關鍵門檻：</b> 殖利率排名 <b>前 35 名</b> 優先納入；跌出 <b>66 名</b> 優先剔除。<br>
-            3. <b>操作建議：</b> 觀察下方列表，<b>殖利率高</b> 且 <b>尚未入選</b> 的股票是首選。<br>
-            4. <b>過渡期：</b> 0056 有 5 天換股期，不需在生效日當天全賣，可分批調節。
+            1. <b>選股池：</b> 市值前 150 大。<br>
+            2. <b>門檻：</b> 殖利率排名 <span class="buy-signal">前 35 納入</span>；<span class="sell-signal">跌出 66 剔除</span>。<br>
+            3. <b>操作：</b> 觀察下方列表，找<b>殖利率高</b>且<b>未入選</b>者。<br>
+            4. <b>出場：</b> 0056 有 5 天換股期，可分批調節。
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -399,7 +440,6 @@ with tab3:
     mid_cap["已入選 ETF"] = mid_cap["股票名稱"].apply(lambda x: ", ".join([e for e in holdings if x in holdings[e]]))
     codes = list(mid_cap["股票代碼"])
     
-    # 抓取殖利率
     with st.spinner("計算殖利率排行中..."):
         yield_data = get_dividend_yield_batch(codes)
     
@@ -407,7 +447,6 @@ with tab3:
     mid_cap["殖利率(%)"] = mid_cap["raw_yield"].apply(lambda x: f"{x:.2f}%")
     
     sort_method = st.radio("🔍 掃描模式：", ["💰 殖利率排行 (抓高息)", "🔥 量能爆發 (抓偷跑)", "💎 尚未入選 (抓遺珠)"])
-    
     df_show = enrich_df(mid_cap, codes)
     
     if "殖利率" in sort_method: df_show = df_show.sort_values("raw_yield", ascending=False).head(30)
@@ -418,9 +457,61 @@ with tab3:
 
 # Tab 4: 全市場權重
 with tab4:
-    st.markdown("""<div class="strategy-box"><div class="strategy-title">📊 全市場市值權重排行 (Top 150)</div><div class="strategy-list">這是台股的地圖。前 150 檔佔大盤 90% 市值。用來判斷權值股資金流向。</div></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="strategy-box"><div class="strategy-title">📊 全市場市值權重排行 (Top 150)</div><div class="strategy-list">台股多空地圖。前 150 檔佔大盤 90% 市值。</div></div>""", unsafe_allow_html=True)
     top150 = df_mcap.head(150).copy()
     codes = list(top150["股票代碼"])
     with st.spinner("計算權重中..."):
         df_150 = enrich_df(top150, codes, add_weight=True)
     st.dataframe(df_150[["排名","連結代碼","股票名稱","權重(Top150)","總市值","現價","成交值","漲跌幅"]], hide_index=True, column_config=column_cfg)
+
+# Tab 5: AI Alpha 對沖 (New!)
+with tab5:
+    # 定義 AI 供應鏈清單 (使用者可自定義或擴充)
+    # 2330台積, 2317鴻海, 2454聯發, 2382廣達, 2308台達, 3231緯創, 6669緯穎, 2376技嘉
+    AI_TARGETS = ['2330', '2317', '2454', '2382', '2308', '3231', '6669', '2376']
+    
+    st.markdown("""
+    <div class="strategy-box">
+        <div class="strategy-title">🤖 AI 供應鏈 Alpha 對沖策略</div>
+        <div class="strategy-list">
+            <b>邏輯：</b> 買進 AI 強勢股，同時放空台指期 (避開大盤下跌風險)，賺取 AI 優於大盤的超額報酬 (Alpha)。<br>
+            <b>操作 SOP：</b><br>
+            1. <b>現貨部位：</b> 依市值權重買入下列 AI 龍頭股。<br>
+            2. <b>期貨部位：</b> 放空微台/小台，對沖系統性風險 (Beta)。<br>
+            3. <b>Beta 調整：</b> 若強烈看好 AI，可將多方比重調高 (例如 1.1倍)。
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        capital = st.number_input("總投資金額 (TWD)", min_value=100000, value=1000000, step=50000)
+        hedge_ratio = st.slider("多空比率 (Long/Short Ratio)", 0.8, 1.5, 1.0, 0.1, help="1.0=中性對沖, 1.2=多方加碼, 0.8=看空避險")
+        
+        st.info(f"💡 若設定 {hedge_ratio}，代表每買 {int(capital):,} 元股票，需放空約 {int(capital/hedge_ratio):,} 元期貨。")
+
+    with c2:
+        with st.spinner("計算投資組合..."):
+            # 確保資料充足 (如果 AI 股不在前 200 名，這裡需要額外抓，但這些大權值股肯定在)
+            ai_df, short_info = calculate_ai_alpha_portfolio(capital, hedge_ratio, AI_TARGETS, df_mcap)
+    
+    if ai_df is not None and short_info is not None:
+        col_long, col_short = st.columns(2)
+        
+        with col_long:
+            st.markdown(f"### 🟢 多方部位 (買進現貨: ${int(capital):,})")
+            st.dataframe(ai_df[["股票名稱", "連結代碼", "現價", "配置權重(%)", "分配金額", "建議買進(股)"]], hide_index=True, column_config=column_cfg)
+            
+        with col_short:
+            st.markdown(f"### 🔴 空方部位 (放空期貨: ${short_info['short_value']:,})")
+            st.markdown(f"""
+            <div class="alpha-short">
+                <h4>避險標的：台指期 (微台 TMF)</h4>
+                <ul>
+                    <li>當前指數：<b>{short_info['index_price']}</b></li>
+                    <li>微台合約價值：<b>${short_info['micro_val']:,}</b> (指數x10)</li>
+                    <li>建議放空口數：<b style='color:#ff7675; font-size:24px;'>{short_info['contracts']} 口</b></li>
+                </ul>
+                <p style='font-size:12px; color:#aaa;'>(註：若口數為小數，請自行四捨五入或搭配小台/大台)</p>
+            </div>
+            """, unsafe_allow_html=True)
