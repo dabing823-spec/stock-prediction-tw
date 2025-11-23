@@ -326,4 +326,133 @@ with tab1:
         must_in = df_anl[(df_anl["排名"] <= 40) & (~df_anl["in_0050"])]
         candidate_in = df_anl[(df_anl["排名"] > 40) & (df_anl["排名"] <= 50) & (~df_anl["in_0050"])]
         
-        in_list = df_mcap[d
+        in_list = df_mcap[df_mcap["股票名稱"].isin(holdings["0050"])]
+        must_out = in_list[in_list["排名"] > 60]
+        danger_out = in_list[(in_list["排名"] > 40) & (in_list["排名"] <= 60)].sort_values("排名", ascending=False)
+        
+        all_codes = list(must_in["股票代碼"]) + list(candidate_in["股票代碼"]) + list(must_out["股票代碼"]) + list(danger_out["股票代碼"])
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.success("🟢 **潛在納入區 (提早佈局)**")
+            if not must_in.empty:
+                st.markdown("**🔥 必然納入 (Rank ≤ 40)**")
+                st.caption("策略：公告前買進，生效日尾盤倒貨")
+                st.dataframe(enrich_df(must_in, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+            
+            if not candidate_in.empty:
+                st.markdown("**⚔️ 關鍵挑戰者 (Rank 41-50)**")
+                st.dataframe(enrich_df(candidate_in, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+            
+            if must_in.empty and candidate_in.empty:
+                st.info("前 50 名皆已在名單內。")
+
+        with c2:
+            st.error("🔴 **潛在剔除區 (提早跳車)**")
+            if not must_out.empty:
+                st.markdown("**👋 必然剔除 (Rank > 60)**")
+                st.caption("策略：公告前先跑，別等 ETF 賣")
+                st.dataframe(enrich_df(must_out, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+            if not danger_out.empty:
+                st.markdown("**⚠️ 危險邊緣 (Rank 41-60)**")
+                st.dataframe(enrich_df(danger_out, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+    else:
+        st.warning("0050 資料讀取失敗")
+
+# ==================================================
+# Tab 2: MSCI
+# ==================================================
+with tab2:
+    st.markdown("""
+    <div class="strategy-box">
+        <div class="strategy-title">📜 MSCI 波動戰法 SOP</div>
+        <div class="strategy-list">
+            1. <b>生效日尾盤：</b> MSCI 調整日 13:25-13:30 會爆大量。<br>
+            2. <b>操作：</b> 若持有納入股，<span class="strategy-highlight">13:30 掛「跌停價」賣出</span>，享受外資被動買盤抬轎。<br>
+            3. <b>右側剔除股：</b> 外資賣壓時間長，切勿輕易接刀。
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if msci_codes:
+        prob_in = df_mcap[(df_mcap["排名"] <= 85) & (~df_mcap["股票代碼"].isin(msci_codes))]
+        watch_in = df_mcap[(df_mcap["排名"] > 85) & (df_mcap["排名"] <= 100) & (~df_mcap["股票代碼"].isin(msci_codes))]
+        prob_out = df_mcap[(df_mcap["排名"] > 100) & (df_mcap["股票代碼"].isin(msci_codes))]
+        
+        all_codes = list(prob_in["股票代碼"]) + list(watch_in["股票代碼"]) + list(prob_out["股票代碼"])
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.success("🟢 **潛在納入 (外資買盤)**")
+            if not prob_in.empty:
+                st.markdown("**🔥 高機率納入 (Rank ≤ 85)**")
+                st.dataframe(enrich_df(prob_in, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+            if not watch_in.empty:
+                st.markdown("**🧐 邊緣觀察 (Rank 86-100)**")
+                st.dataframe(enrich_df(watch_in, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+
+        with c2:
+            st.error("🔴 **潛在剔除 (外資賣盤)**")
+            if not prob_out.empty:
+                st.markdown("**👋 潛在剔除 (Rank > 100)**")
+                st.dataframe(enrich_df(prob_out, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+    else:
+        st.warning("MSCI 資料讀取失敗")
+
+# ==================================================
+# Tab 3: 高股息/中型 100
+# ==================================================
+with tab3:
+    st.markdown("""
+    <div class="strategy-box">
+        <div class="strategy-title">📜 中型股 (0056/00878) 偷跑 SOP</div>
+        <div class="strategy-list">
+            1. <b>目標：</b> 鎖定 Rank 50~150，且 <span class="strategy-highlight">「已入選 ETF」為空</span> 的遺珠。<br>
+            2. <b>訊號：</b> 下方篩選出 <b>「🔥爆量」</b> 或 <b>「💰資金熱度高」</b> 的股票，代表投信正在偷跑。<br>
+            3. <b>操作：</b> 公告前 1 個月進場，公告利多見報時出場 (掛跌停/市價停利)。
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    mid_cap = df_mcap[(df_mcap["排名"] >= 50) & (df_mcap["排名"] <= 150)].copy()
+    
+    def check_status(name):
+        tags = []
+        if name in holdings["0056"]: tags.append("0056")
+        if name in holdings["00878"]: tags.append("00878")
+        if name in holdings["00919"]: tags.append("00919")
+        return ", ".join(tags) if tags else "-"
+    
+    mid_cap["已入選 ETF"] = mid_cap["股票名稱"].apply(check_status)
+    
+    # 抓取行情
+    codes = list(mid_cap["股票代碼"])
+    info = get_advanced_stock_info(codes)
+    
+    mid_cap["現價"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("現價", "-"))
+    mid_cap["漲跌幅"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("漲跌", "-"))
+    mid_cap["成交量"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("量能", "-"))
+    mid_cap["成交值"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("成交值", "-"))
+    mid_cap["raw_turnover"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("raw_turnover", 0))
+    mid_cap["raw_vol"] = mid_cap["股票代碼"].map(lambda x: info.get(x, {}).get("raw_vol", 0))
+    mid_cap["連結代碼"] = mid_cap["股票代碼"].apply(lambda x: f"https://tw.stock.yahoo.com/quote/{x}")
+
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        sort_method = st.radio("🔍 戰術篩選器：", ["💰 資金熱度 (抓大人)", "🔥 量能爆發 (抓偷跑)", "💎 尚未入選 (抓遺珠)"])
+    with c2:
+        st.info("💡 請重點關注「資金熱度」高且「尚未入選」的股票。")
+
+    if sort_method == "💰 資金熱度 (抓大人)":
+        df_show = mid_cap.sort_values("raw_turnover", ascending=False).head(30)
+    elif sort_method == "🔥 量能爆發 (抓偷跑)":
+        df_show = mid_cap.sort_values("raw_vol", ascending=False).head(30)
+    else:
+        df_show = mid_cap[mid_cap["已入選 ETF"] == "-"].sort_values("排名").head(30)
+
+    st.dataframe(
+        df_show[["排名", "連結代碼", "股票名稱", "已入選 ETF", "現價", "成交值", "漲跌幅", "成交量"]],
+        use_container_width=True,
+        hide_index=True,
+        column_config=column_cfg
+    )
