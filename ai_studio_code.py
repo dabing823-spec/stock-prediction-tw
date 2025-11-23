@@ -9,12 +9,11 @@ from datetime import date, datetime
 import urllib3
 import yfinance as yf
 import time
-import numpy as np
 
 # -------------------------------------------
 # 1. 基礎設定 & CSS
 # -------------------------------------------
-st.set_page_config(page_title="台股 ETF 戰情室 (全攻略版)", layout="wide")
+st.set_page_config(page_title="台股 ETF 戰情室 (實戰版)", layout="wide")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 自定義 CSS
@@ -150,8 +149,10 @@ def fetch_etf_holdings(etf_code="0050"):
         return list(set([n for n in names if n not in ['nan','']]))
     except: return []
 
+# --- 專門抓殖利率 (Cache 24小時) ---
 @st.cache_data(ttl=86400)
-def get_fundamentals_batch(codes):
+def get_dividend_yield_batch(codes):
+    """使用 yfinance 抓取殖利率"""
     if not codes: return {}
     data = {}
     tickers_str = " ".join([f"{c}.TW" for c in codes])
@@ -160,20 +161,20 @@ def get_fundamentals_batch(codes):
         for c in codes:
             try:
                 info = tickers.tickers[f"{c}.TW"].info
-                data[c] = {
-                    'roe': (info.get('returnOnEquity', 0) or 0) * 100,
-                    'rev_growth': (info.get('revenueGrowth', 0) or 0) * 100,
-                    'pe': info.get('trailingPE', 100) or 100,
-                    'yield': (info.get('dividendYield', 0) or 0) * 100,
-                    'gm': (info.get('grossMargins', 0) or 0) * 100
-                }
+                # 取得殖利率 (若無資料則為 None)
+                dy = info.get('dividendYield', 0)
+                if dy is not None:
+                    data[c] = dy * 100 # 轉為百分比
+                else:
+                    data[c] = 0
             except:
-                data[c] = {'roe':0, 'rev_growth':0, 'pe':100, 'yield':0, 'gm':0}
+                data[c] = 0
         return data
     except: return {}
 
 @st.cache_data(ttl=300)
 def get_advanced_stock_info(codes):
+    """取得量價資訊 (含成交值計算)"""
     if not codes: return {}
     try:
         tickers = " ".join([f"{c}.TW" for c in codes])
@@ -189,26 +190,35 @@ def get_advanced_stock_info(codes):
                     vol = h["Volume"].iloc[-1]
                     avg_vol = h["Volume"].mean()
                     turnover = curr_price * vol
+                    
+                    if turnover > 100000000: turnover_str = f"{turnover/100000000:.1f}億"
+                    else: turnover_str = f"{turnover/10000:.0f}萬"
+                    
                     change_pct = ((curr_price - prev_price) / prev_price) * 100
                     
-                    vol_status = "🔥爆量" if (vol > avg_vol * 2 and vol > 1000) else "💧縮量" if vol < avg_vol * 0.6 else "➖正常"
+                    if vol > (avg_vol * 2) and vol > 1000: vol_status = "🔥爆量"
+                    elif vol < (avg_vol * 0.6): vol_status = "💧縮量"
+                    else: vol_status = "➖正常"
                     
                     res[c] = {
                         "現價": f"{curr_price:.2f}",
                         "漲跌": f"{change_pct:+.2f}%",
                         "量能": f"{int(vol/1000)}張 ({vol_status})",
-                        "成交值": f"{turnover/100000000:.1f}億" if turnover > 100000000 else f"{turnover/10000:.0f}萬",
+                        "成交值": turnover_str,
                         "raw_vol": vol,
                         "raw_change": change_pct,
                         "raw_turnover": turnover
                     }
-                else: res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "成交值": "-", "raw_vol": 0, "raw_change": 0, "raw_turnover": 0}
-            except: res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "成交值": "-", "raw_vol": 0, "raw_change": 0, "raw_turnover": 0}
+                else:
+                    res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "成交值": "-", "raw_vol": 0, "raw_change": 0, "raw_turnover": 0}
+            except:
+                res[c] = {"現價": "-", "漲跌": "-", "量能": "-", "成交值": "-", "raw_vol": 0, "raw_change": 0, "raw_turnover": 0}
         return res
     except: return {}
 
 @st.cache_data(ttl=3600)
 def calculate_market_weights(codes):
+    """計算權重 (Tab 4)"""
     if not codes: return {}
     try:
         mcap_data = {}
@@ -257,36 +267,14 @@ def get_high_yield_schedule():
 
 column_cfg = {
     "連結代碼": st.column_config.LinkColumn("代號", display_text=r"https://tw\.stock\.yahoo\.com/quote/(\d+)", width="small"),
-    "raw_turnover": None, "raw_vol": None, "uni_score": None, "nomura_score": None, "smart_score": None
+    "raw_turnover": None, "raw_vol": None, "raw_yield": None
 }
-
-def run_active_etf_strategies(df_pool):
-    codes = df_pool["股票代碼"].tolist()
-    fund_data = get_fundamentals_batch(codes)
-    df = df_pool.copy()
-    df['rev_growth'] = df['股票代碼'].map(lambda x: fund_data.get(x, {}).get('rev_growth', 0))
-    df['gm'] = df['股票代碼'].map(lambda x: fund_data.get(x, {}).get('gm', 0))
-    df['roe'] = df['股票代碼'].map(lambda x: fund_data.get(x, {}).get('roe', 0))
-    df['pe'] = df['股票代碼'].map(lambda x: fund_data.get(x, {}).get('pe', 100))
-    df['yield'] = df['股票代碼'].map(lambda x: fund_data.get(x, {}).get('yield', 0))
-    
-    df['s_rev'] = df['rev_growth'].rank(pct=True)
-    df['s_gm'] = df['gm'].rank(pct=True)
-    df['uni_score'] = (df['s_rev']*0.5 + df['s_gm']*0.5) * 100
-    
-    df['s_roe'] = df['roe'].rank(pct=True)
-    df['s_val'] = (1/df['pe']).rank(pct=True)
-    df['nomura_score'] = (df['s_roe']*0.6 + df['s_val']*0.4) * 100
-    
-    df['s_yld'] = df['yield'].rank(pct=True)
-    df['smart_score'] = (df['s_rev']*0.3 + df['s_roe']*0.3 + df['s_yld']*0.4) * 100
-    return df
 
 # -------------------------------------------
 # 5. 主程式 UI
 # -------------------------------------------
-st.title("🚀 台股 ETF 戰情室 (全攻略版)")
-st.caption("0050 | MSCI | 高股息 | 主動式 ETF 策略")
+st.title("🚀 台股 ETF 戰情室 (實戰版)")
+st.caption("0050 | MSCI | 高股息 | 全市場權重")
 
 m_inds = get_market_indicators()
 col1, col2, col3, col4 = st.columns(4)
@@ -305,7 +293,7 @@ with col4:
 
 st.divider()
 
-with st.spinner("正在進行全市場掃描 (含基本面數據)..."):
+with st.spinner("正在進行全市場掃描 (含殖利率數據)..."):
     df_mcap = fetch_taifex_rankings(limit=200)
     msci_codes = fetch_msci_list()
     holdings = {}
@@ -323,7 +311,7 @@ with st.sidebar:
     if st.button("🔄 更新行情"): st.cache_data.clear(); st.rerun()
     st.caption(f"Update: {datetime.now().strftime('%H:%M')}")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🇹🇼 0050 權值", "🌍 MSCI 外資", "💰 0056 高股息", "📊 全市場權重(Top150)", "🆕 主動式 ETF 戰略"])
+tab1, tab2, tab3, tab4 = st.tabs(["🇹🇼 0050 權值", "🌍 MSCI 外資", "💰 0056 高股息", "📊 全市場權重(Top150)"])
 
 # Tab 1: 0050
 with tab1:
@@ -331,11 +319,11 @@ with tab1:
     <div class="strategy-box">
         <div class="strategy-title">📜 0050 吃豆腐戰法 (SOP)</div>
         <div class="strategy-list">
-            1. <b>核心邏輯：</b> 0050 僅追蹤「市值前 50 大」。排名掉到 60 必出，衝進 40 必入。<br>
-            2. <b>進場時機 (佈局期)：</b> <span class="buy-signal">公告前</span>。鎖定下方 Rank ≤ 40 但「未入選」的股票，提前卡位。<br>
-            3. <b>出場時機 (收割期)：</b> <span class="sell-signal">生效日 13:30 (最後一盤)</span>。<br>
-            4. <b>操作細節：</b> 生效日尾盤掛 <span class="strategy-highlight">「跌停價」</span> 賣出 (確保 100% 倒貨給 ETF 市價單)。<br>
-            5. <b>避險：</b> 若公告前漲幅已大 (>20%)，代表利多出盡，勿追。
+            1. <b>核心邏輯：</b> 市值前 40 名必定納入。我們利用「市值排名」提前預測。<br>
+            2. <b>進場時機 (佈局期)：</b> <span class="buy-signal">公告前 1 個月</span>。掃描下方左側「潛在納入」股 (Rank ≤ 40 但未入選)。<br>
+            3. <b>出場時機 (收割期)：</b> <span class="sell-signal">生效日當天 13:30 (最後一盤)</span>。<br>
+            4. <b>操作細節：</b> 生效日尾盤掛 <span class="strategy-highlight">「跌停價」</span> 賣出 (確保 100% 倒貨給 ETF)。<br>
+            5. <b>避險：</b> 若公告前股價漲幅 > 20%，勿追。
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -361,10 +349,10 @@ with tab2:
         <div class="strategy-title">📜 MSCI 波動戰法 (SOP)</div>
         <div class="strategy-list">
             1. <b>核心邏輯：</b> 追蹤全球資金流向，重點在「生效日尾盤爆量」。<br>
-            2. <b>進場時機 (佈局期)：</b> <span class="buy-signal">公布日早晨 (開盤)</span>。若有意外黑馬 (市場未預期納入)，開盤市價敲進。<br>
+            2. <b>進場時機 (佈局期)：</b> <span class="buy-signal">公布日早晨 (開盤)</span>。搶進意外黑馬。<br>
             3. <b>出場時機 (收割期)：</b> <span class="sell-signal">生效日 13:30 (最後一盤)</span>。<br>
             4. <b>操作細節：</b> 若持有納入股，當天盤中不賣，等到 13:25 掛 <span class="strategy-highlight">「跌停價」</span> 賣出。<br>
-            5. <b>避險：</b> 右側「剔除區」股票，外資賣壓會持續很久，勿輕易接刀。
+            5. <b>避險：</b> 右側「剔除區」股票勿輕易接刀。
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -381,21 +369,16 @@ with tab2:
             st.error("🔴 **潛在剔除 (外資賣盤)**")
             if not prob_out.empty: st.dataframe(enrich_df(prob_out, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
 
-# Tab 3: 0056
+# Tab 3: 0056 (加入殖利率)
 with tab3:
     st.markdown("""
     <div class="strategy-box">
         <div class="strategy-title">📜 0056 高股息 ETF 操作戰法 (元大投信官方邏輯版)</div>
         <div class="strategy-list">
-            1. <b>選股池：</b> 台股 50 + 中型 100 (即 <b>市值前 150 大</b>)。<br>
-            2. <b>篩選標準：</b> 預測「未來一年殖利率」最高的 50 檔。<br>
-               - <b>納入門檻：</b> 殖利率排名上升至第 35 名以上。<br>
-               - <b>剔除門檻：</b> 殖利率排名下跌至第 66 名以下。<br>
-            3. <b>關鍵時程：</b> 審核在 <b>6月、12月</b> 的第一個週五。<br>
-            4. <b>操作時機 (過渡期戰法)：</b><br>
-               - <b>進場：</b> <span class="buy-signal">公告日後 ~ 過渡期開始前</span>。若確認納入，在 ETF 尚未買滿前進場。<br>
-               - <b>出場：</b> 0056 調整有 <b>5 個交易日過渡期</b>。不用急著第一天賣，可分批在過渡期內 (ETF 連續買進時) 倒貨。<br>
-            5. <b>避險：</b> 高股息調整是「明牌」，投信主動基金會提前偷跑，公告日往往是短線高點。
+            1. <b>選股池：</b> 市值前 150 大 (台股50 + 中型100)。<br>
+            2. <b>關鍵門檻：</b> 殖利率排名 <b>前 35 名</b> 優先納入；跌出 <b>66 名</b> 優先剔除。<br>
+            3. <b>操作建議：</b> 觀察下方列表，<b>殖利率高</b> 且 <b>尚未入選</b> 的股票是首選。<br>
+            4. <b>過渡期：</b> 0056 有 5 天換股期，不需在生效日當天全賣，可分批調節。
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -403,12 +386,23 @@ with tab3:
     mid_cap["已入選 ETF"] = mid_cap["股票名稱"].apply(lambda x: ", ".join([e for e in holdings if x in holdings[e]]))
     codes = list(mid_cap["股票代碼"])
     
-    sort_method = st.radio("🔍 掃描模式：", ["💰 資金熱度 (抓投信)", "🔥 量能爆發 (抓偷跑)", "💎 尚未入選 (抓遺珠)"])
-    if "資金" in sort_method: df_show = enrich_df(mid_cap, codes).sort_values("raw_turnover", ascending=False).head(30)
-    elif "量能" in sort_method: df_show = enrich_df(mid_cap, codes).sort_values("raw_vol", ascending=False).head(30)
-    else: df_show = enrich_df(mid_cap[mid_cap["已入選 ETF"] == ""], codes).sort_values("排名").head(30)
+    # 抓取殖利率
+    with st.spinner("計算殖利率排行中..."):
+        yield_data = get_dividend_yield_batch(codes)
     
-    st.dataframe(df_show[["排名","連結代碼","股票名稱","已入選 ETF","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+    mid_cap["raw_yield"] = mid_cap["股票代碼"].map(lambda x: yield_data.get(x, 0))
+    mid_cap["殖利率(%)"] = mid_cap["raw_yield"].apply(lambda x: f"{x:.2f}%")
+    
+    sort_method = st.radio("🔍 掃描模式：", ["💰 殖利率排行 (抓高息)", "🔥 量能爆發 (抓偷跑)", "💎 尚未入選 (抓遺珠)"])
+    
+    # 資料豐富化
+    df_show = enrich_df(mid_cap, codes)
+    
+    if "殖利率" in sort_method: df_show = df_show.sort_values("raw_yield", ascending=False).head(30)
+    elif "量能" in sort_method: df_show = df_show.sort_values("raw_vol", ascending=False).head(30)
+    else: df_show = df_show[df_show["已入選 ETF"] == ""].sort_values("排名").head(30)
+    
+    st.dataframe(df_show[["排名","連結代碼","股票名稱","殖利率(%)","已入選 ETF","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
 
 # Tab 4: 全市場權重
 with tab4:
@@ -418,25 +412,3 @@ with tab4:
     with st.spinner("計算權重中..."):
         df_150 = enrich_df(top150, codes, add_weight=True)
     st.dataframe(df_150[["排名","連結代碼","股票名稱","權重(Top150)","總市值","現價","成交值","漲跌幅"]], hide_index=True, column_config=column_cfg)
-
-# Tab 5: 主動式 ETF 戰略
-with tab5:
-    st.markdown("""<div class="strategy-box"><div class="strategy-title">🆕 主動式 ETF 模擬戰略</div><div class="strategy-list">模擬統一(動能)、野村(價值/多因子)選股邏輯。找出尚未大漲的黑馬。</div></div>""", unsafe_allow_html=True)
-    with st.spinner("正在計算基本面因子..."):
-        pool = df_mcap.head(150).copy()
-        scored_df = run_active_etf_strategies(pool)
-        scored_df = enrich_df(scored_df, list(scored_df["股票代碼"]))
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.subheader("🏆 統一台股增長型")
-        res = scored_df.sort_values("uni_score", ascending=False).head(10)
-        st.dataframe(res[["排名","連結代碼","股票名稱","uni_score","漲跌幅"]], hide_index=True, column_config=column_cfg)
-    with c2:
-        st.subheader("🛡️ 野村臺灣增強型")
-        black_horse = scored_df[scored_df["排名"] > 50].sort_values("nomura_score", ascending=False).head(10)
-        st.dataframe(black_horse[["排名","連結代碼","股票名稱","nomura_score","漲跌幅"]], hide_index=True, column_config=column_cfg)
-    with c3:
-        st.subheader("🧠 野村智慧優選型")
-        res = scored_df.sort_values("smart_score", ascending=False).head(10)
-        st.dataframe(res[["排名","連結代碼","股票名稱","smart_score","漲跌幅"]], hide_index=True, column_config=column_cfg)
