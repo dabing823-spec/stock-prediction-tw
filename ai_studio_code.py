@@ -174,6 +174,24 @@ def get_dividend_yield_batch(codes):
         return data
     except: return {}
 
+# 新增：批次取得產業資訊 (用來過濾電子股)
+@st.cache_data(ttl=86400)
+def get_sector_batch(codes):
+    if not codes: return {}
+    sector_map = {}
+    tickers_str = " ".join([f"{c}.TW" for c in codes])
+    try:
+        tickers = yf.Tickers(tickers_str)
+        for c in codes:
+            try:
+                # 嘗試取得產業資訊
+                s = tickers.tickers[f"{c}.TW"].info.get('sector', 'Unknown')
+                sector_map[c] = s
+            except:
+                sector_map[c] = 'Unknown'
+        return sector_map
+    except: return {}
+
 @st.cache_data(ttl=300)
 def get_advanced_stock_info(codes):
     if not codes: return {}
@@ -191,10 +209,6 @@ def get_advanced_stock_info(codes):
                     vol = h["Volume"].iloc[-1]
                     avg_vol = h["Volume"].mean()
                     turnover = curr_price * vol
-                    
-                    if turnover > 100000000: turnover_str = f"{turnover/100000000:.1f}億"
-                    else: turnover_str = f"{turnover/10000:.0f}萬"
-                    
                     change_pct = ((curr_price - prev_price) / prev_price) * 100
                     
                     vol_status = "🔥爆量" if (vol > avg_vol * 2 and vol > 1000) else "💧縮量" if vol < avg_vol * 0.6 else "➖正常"
@@ -203,7 +217,7 @@ def get_advanced_stock_info(codes):
                         "現價": f"{curr_price:.2f}",
                         "漲跌": f"{change_pct:+.2f}%",
                         "量能": f"{int(vol/1000)}張 ({vol_status})",
-                        "成交值": turnover_str,
+                        "成交值": f"{turnover/100000000:.1f}億" if turnover > 100000000 else f"{turnover/10000:.0f}萬",
                         "raw_vol": vol,
                         "raw_change": change_pct,
                         "raw_turnover": turnover,
@@ -269,51 +283,54 @@ column_cfg = {
     "raw_turnover": None, "raw_vol": None, "raw_yield": None
 }
 
-# --- AI Alpha 策略專用 ---
-def calculate_ai_alpha_portfolio(total_capital, hedge_ratio, ai_codes, df_mcap):
-    # 1. 篩選出 AI 概念股
-    ai_df = df_mcap[df_mcap["股票代碼"].isin(ai_codes)].copy()
+# --- 升級版：自動篩選非電子 Alpha 策略 ---
+def calculate_non_tech_alpha_portfolio(total_capital, hedge_ratio, df_mcap):
+    # 1. 取市值前 50 大
+    top50_df = df_mcap.head(50).copy()
+    top50_codes = top50_df["股票代碼"].tolist()
     
-    if ai_df.empty: return None, None
+    # 2. 抓取產業類別
+    sector_map = get_sector_batch(top50_codes)
+    top50_df["Sector"] = top50_df["股票代碼"].map(sector_map)
     
-    # 2. 計算權重 (基於市值)
-    # 取得市值數據
-    weight_info = calculate_market_weights(ai_codes)
-    ai_df["raw_mcap"] = ai_df["股票代碼"].map(lambda x: weight_info.get(x, {}).get("raw_mcap", 0))
+    # 3. 過濾電子股 (Technology)
+    # 註：YFinance 中，Technology=電子, Semiconductors=半導體。我們都要排除。
+    # 我們只保留 Financial Services(金融), Basic Materials(傳產), Industrials(航運/機電), etc.
+    non_tech_df = top50_df[~top50_df["Sector"].isin(["Technology", "Semiconductors", "Communication Services"])].copy()
     
-    total_mcap = ai_df["raw_mcap"].sum()
-    if total_mcap == 0: return None, None
+    # 若過濾完沒東西 (不太可能)，就回傳空
+    if non_tech_df.empty: return None, None, pd.DataFrame()
     
-    ai_df["配置權重(%)"] = (ai_df["raw_mcap"] / total_mcap)
+    # 4. 計算權重 (針對這群非電子股重新分配)
+    target_codes = non_tech_df["股票代碼"].tolist()
+    weight_info = calculate_market_weights(target_codes)
+    non_tech_df["raw_mcap"] = non_tech_df["股票代碼"].map(lambda x: weight_info.get(x, {}).get("raw_mcap", 0))
     
-    # 3. 計算多方部位
-    # 取得目前股價
-    price_info = get_advanced_stock_info(ai_codes)
-    ai_df["現價"] = ai_df["股票代碼"].map(lambda x: price_info.get(x, {}).get("raw_price", 0))
+    total_mcap = non_tech_df["raw_mcap"].sum()
+    non_tech_df["配置權重(%)"] = (non_tech_df["raw_mcap"] / total_mcap)
     
-    ai_df["分配金額"] = total_capital * ai_df["配置權重(%)"]
+    # 5. 計算多方部位
+    price_info = get_advanced_stock_info(target_codes)
+    non_tech_df["現價"] = non_tech_df["股票代碼"].map(lambda x: price_info.get(x, {}).get("raw_price", 0))
     
-    # 計算股數 (取整股)
-    ai_df["建議買進(股)"] = (ai_df["分配金額"] / ai_df["現價"]).fillna(0).astype(int)
+    non_tech_df["分配金額"] = total_capital * non_tech_df["配置權重(%)"]
+    non_tech_df["建議買進(股)"] = (non_tech_df["分配金額"] / non_tech_df["現價"]).fillna(0).astype(int)
+    
+    # 補欄位
+    non_tech_df["股票名稱"] = non_tech_df["股票名稱"]
+    non_tech_df["連結代碼"] = non_tech_df["股票代碼"].apply(lambda x: f"https://tw.stock.yahoo.com/quote/{x}")
     
     # 調整顯示
-    ai_df["配置權重(%)"] = (ai_df["配置權重(%)"] * 100).map(lambda x: f"{x:.2f}%")
-    ai_df["分配金額"] = ai_df["分配金額"].map(lambda x: f"${int(x):,}")
+    non_tech_df["配置權重(%)"] = (non_tech_df["配置權重(%)"] * 100).map(lambda x: f"{x:.2f}%")
+    non_tech_df["分配金額"] = non_tech_df["分配金額"].map(lambda x: f"${int(x):,}")
     
-    # 4. 計算空方部位 (避險)
-    # 取得大盤指數
+    # 6. 計算空方部位 (避險)
     try:
         twii_price = yf.Ticker("^TWII").history(period="1d")["Close"].iloc[-1]
     except:
-        twii_price = 23000 # fallback
+        twii_price = 23000
         
-    short_target = total_capital / hedge_ratio # 若 hedge_ratio=1.1 (多1.1:空1), 則空單金額 = 本金/1.1 (或是另一種邏輯: 本金為多單金額，空單金額調整)
-    # 修正邏輯：使用者輸入的是「本金」(做多金額)，我們計算需要多少空單來對沖
-    # 假設 Hedge Ratio = 多方 / 空方. 若 Ratio = 1.1 (看多), 空方 = 多方 / 1.1
-    
     short_value_needed = total_capital / hedge_ratio
-    
-    # 微台合約價值 = 指數 * 10
     micro_contract_val = twii_price * 10
     num_micro = short_value_needed / micro_contract_val
     
@@ -324,13 +341,13 @@ def calculate_ai_alpha_portfolio(total_capital, hedge_ratio, ai_codes, df_mcap):
         "contracts": round(num_micro, 1)
     }
     
-    return ai_df, short_info
+    return non_tech_df, short_info, top50_df[["股票名稱", "Sector"]] # 回傳全表供檢查
 
 # -------------------------------------------
 # 5. 主程式 UI
 # -------------------------------------------
 st.title("🚀 台股 ETF 戰情室 (全攻略版)")
-st.caption("0050 | MSCI | 高股息 | Alpha 對沖策略")
+st.caption("0050 | MSCI | 高股息 | 非電 Alpha 策略")
 
 m_inds = get_market_indicators()
 col1, col2, col3, col4 = st.columns(4)
@@ -367,7 +384,7 @@ with st.sidebar:
     if st.button("🔄 更新行情"): st.cache_data.clear(); st.rerun()
     st.caption(f"Update: {datetime.now().strftime('%H:%M')}")
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🇹🇼 0050 權值", "🌍 MSCI 外資", "💰 0056 高股息", "📊 全市場權重", "🤖 AI Alpha 對沖"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🇹🇼 0050 權值", "🌍 MSCI 外資", "💰 0056 高股息", "📊 全市場權重", "🏗️ 傳產/金融 Alpha"])
 
 # Tab 1: 0050
 with tab1:
@@ -417,10 +434,10 @@ with tab2:
         
         c1, c2 = st.columns(2)
         with c1:
-            st.success("🟢 **潛在納入**")
+            st.success("🟢 **潛在納入 (外資買盤)**")
             if not prob_in.empty: st.dataframe(enrich_df(prob_in, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
         with c2:
-            st.error("🔴 **潛在剔除**")
+            st.error("🔴 **潛在剔除 (外資賣盤)**")
             if not prob_out.empty: st.dataframe(enrich_df(prob_out, all_codes)[["排名","連結代碼","股票名稱","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
 
 # Tab 3: 0056
@@ -450,68 +467,4 @@ with tab3:
     df_show = enrich_df(mid_cap, codes)
     
     if "殖利率" in sort_method: df_show = df_show.sort_values("raw_yield", ascending=False).head(30)
-    elif "量能" in sort_method: df_show = df_show.sort_values("raw_vol", ascending=False).head(30)
-    else: df_show = df_show[df_show["已入選 ETF"] == ""].sort_values("排名").head(30)
-    
-    st.dataframe(df_show[["排名","連結代碼","股票名稱","殖利率(%)","已入選 ETF","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
-
-# Tab 4: 全市場權重
-with tab4:
-    st.markdown("""<div class="strategy-box"><div class="strategy-title">📊 全市場市值權重排行 (Top 150)</div><div class="strategy-list">台股多空地圖。前 150 檔佔大盤 90% 市值。</div></div>""", unsafe_allow_html=True)
-    top150 = df_mcap.head(150).copy()
-    codes = list(top150["股票代碼"])
-    with st.spinner("計算權重中..."):
-        df_150 = enrich_df(top150, codes, add_weight=True)
-    st.dataframe(df_150[["排名","連結代碼","股票名稱","權重(Top150)","總市值","現價","成交值","漲跌幅"]], hide_index=True, column_config=column_cfg)
-
-# Tab 5: AI Alpha 對沖 (New!)
-with tab5:
-    # 定義 AI 供應鏈清單 (使用者可自定義或擴充)
-    # 2330台積, 2317鴻海, 2454聯發, 2382廣達, 2308台達, 3231緯創, 6669緯穎, 2376技嘉
-    AI_TARGETS = ['2330', '2317', '2454', '2382', '2308', '3231', '6669', '2376']
-    
-    st.markdown("""
-    <div class="strategy-box">
-        <div class="strategy-title">🤖 AI 供應鏈 Alpha 對沖策略</div>
-        <div class="strategy-list">
-            <b>邏輯：</b> 買進 AI 強勢股，同時放空台指期 (避開大盤下跌風險)，賺取 AI 優於大盤的超額報酬 (Alpha)。<br>
-            <b>操作 SOP：</b><br>
-            1. <b>現貨部位：</b> 依市值權重買入下列 AI 龍頭股。<br>
-            2. <b>期貨部位：</b> 放空微台/小台，對沖系統性風險 (Beta)。<br>
-            3. <b>Beta 調整：</b> 若強烈看好 AI，可將多方比重調高 (例如 1.1倍)。
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    c1, c2 = st.columns([1, 2])
-    with c1:
-        capital = st.number_input("總投資金額 (TWD)", min_value=100000, value=1000000, step=50000)
-        hedge_ratio = st.slider("多空比率 (Long/Short Ratio)", 0.8, 1.5, 1.0, 0.1, help="1.0=中性對沖, 1.2=多方加碼, 0.8=看空避險")
-        
-        st.info(f"💡 若設定 {hedge_ratio}，代表每買 {int(capital):,} 元股票，需放空約 {int(capital/hedge_ratio):,} 元期貨。")
-
-    with c2:
-        with st.spinner("計算投資組合..."):
-            # 確保資料充足 (如果 AI 股不在前 200 名，這裡需要額外抓，但這些大權值股肯定在)
-            ai_df, short_info = calculate_ai_alpha_portfolio(capital, hedge_ratio, AI_TARGETS, df_mcap)
-    
-    if ai_df is not None and short_info is not None:
-        col_long, col_short = st.columns(2)
-        
-        with col_long:
-            st.markdown(f"### 🟢 多方部位 (買進現貨: ${int(capital):,})")
-            st.dataframe(ai_df[["股票名稱", "連結代碼", "現價", "配置權重(%)", "分配金額", "建議買進(股)"]], hide_index=True, column_config=column_cfg)
-            
-        with col_short:
-            st.markdown(f"### 🔴 空方部位 (放空期貨: ${short_info['short_value']:,})")
-            st.markdown(f"""
-            <div class="alpha-short">
-                <h4>避險標的：台指期 (微台 TMF)</h4>
-                <ul>
-                    <li>當前指數：<b>{short_info['index_price']}</b></li>
-                    <li>微台合約價值：<b>${short_info['micro_val']:,}</b> (指數x10)</li>
-                    <li>建議放空口數：<b style='color:#ff7675; font-size:24px;'>{short_info['contracts']} 口</b></li>
-                </ul>
-                <p style='font-size:12px; color:#aaa;'>(註：若口數為小數，請自行四捨五入或搭配小台/大台)</p>
-            </div>
-            """, unsafe_allow_html=True)
+    elif "量能" in sort_method:
