@@ -872,4 +872,16 @@ with tab3:
     
     if "殖利率" in sort_method: df_show = df_show.sort_values("raw_yield", ascending=False).head(30)
     elif "量能" in sort_method: df_show = df_show.sort_values("raw_vol", ascending=False).head(30)
-    else: df_show = df_show方部位 (期貨: ${short_info['short_value
+    else: df_show = df_show方部位 (期貨: ${short_info['short_value']:,})")
+            st.markdown(f"""<div class="alpha-short"><h4>避險標的：微台 (TMF)</h4><ul>[df_show["已入選 ETF"] == ""].sort_values("排名").head(30)
+    
+    st.dataframe(df_show[["排名","連結代碼","股票名稱","殖利率(%)","已入選 ETF","現價","成交值","漲跌幅","成交量"]], hide_index=True, column_config=column_cfg)
+
+# Tab 4: 全市場權重
+with tab4:
+    st.markdown("""<div class="strategy-box"><div class="strategy-title">📊 全市場市值權重排行 (Top 150)</div><div class="strategy-list">台股多空地圖。前 150 檔佔大盤 90% 市值。</div></div>""", unsafe_allow_html=True)
+    top150 = df_mcap.head(150).copy()
+    codes = list(top150["股票代碼"])
+    with st.spinner("計算權重中..."):
+        df_150 = enrich_df(top150, codes, add_weight=True)
+    st.dataframe(df_150[["排名","連結代碼","股票名稱","<li>當前指數：<b>{short_info['index_price']}</b></li><li>合約價值：<b>${short_info['micro_val']:,}</b></li><li>建議放空：<b style='color:#ff7675; font-size:24px;'>{short_info['contracts']} 口</b></li></ul></div>""", unsafe_allow_html=True)
