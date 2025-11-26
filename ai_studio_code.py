@@ -27,9 +27,14 @@ st.markdown("""
         border-left: 4px solid #FF4B4B;
         text-align: center;
         margin-bottom: 10px;
+        height: 100px; /* 固定高度讓排版整齊 */
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
     }
     .metric-label { font-size: 13px; color: #aaa; }
     .metric-value { font-size: 20px; font-weight: bold; color: #fff; }
+    .metric-sub { font-size: 12px; margin-top: 4px; font-weight: bold; }
     
     .strategy-box {
         background-color: #1e2329;
@@ -51,15 +56,43 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://www.wantgoo.com/"
 }
 
 # -------------------------------------------
-# 2. 大盤環境指標
+# 2. 大盤環境指標 (包含新增的 VIXTWN)
 # -------------------------------------------
+
+# 新增：抓取玩股網 VIXTWN
+@st.cache_data(ttl=300)
+def fetch_vixtwn_wantgoo():
+    url = "https://www.wantgoo.com/index/vixtwn"
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "lxml")
+            # 玩股網的大盤數值通常在 class 為 price 的 span 中
+            price_tag = soup.find("span", class_="price")
+            if price_tag:
+                val = float(price_tag.text.replace(",", ""))
+                
+                # 抓取漲跌 (非必要，但有比較好)
+                change = 0
+                change_tag = soup.find("span", class_="chg-val")
+                if change_tag:
+                    change = float(change_tag.text.replace(",", ""))
+                    
+                return {"val": val, "change": change}
+    except Exception as e:
+        print(f"VIXTWN Error: {e}")
+    return {"val": None, "change": 0}
+
 @st.cache_data(ttl=300)
 def get_market_indicators():
     indicators = {}
+    
+    # 1. 美國 VIX
     try:
         vix = yf.Ticker("^VIX").history(period="5d")
         if not vix.empty:
@@ -67,7 +100,10 @@ def get_market_indicators():
             prev = vix["Close"].iloc[-2]
             indicators["VIX"] = {"val": round(curr, 2), "delta": round(curr - prev, 2)}
         else: indicators["VIX"] = {"val": "-", "delta": 0}
+    except: indicators["VIX"] = {"val": "-", "delta": 0}
 
+    # 2. 台股加權
+    try:
         twii = yf.Ticker("^TWII").history(period="3mo")
         if not twii.empty:
             curr = twii["Close"].iloc[-1]
@@ -78,8 +114,11 @@ def get_market_indicators():
             status_list.append("站上季線" if curr > ma60 else "跌破季線")
             indicators["TWII"] = {"val": int(curr), "status": " | ".join(status_list)}
         else: indicators["TWII"] = {"val": "-", "status": "無法取得"}
-    except: 
-        indicators = {"VIX": {"val":"-", "delta":0}, "TWII": {"val":"-", "status":"-"}}
+    except: indicators["TWII"] = {"val": "-", "status": "-"}
+    
+    # 3. 台灣 VIXTWN (玩股網)
+    indicators["VIXTWN"] = fetch_vixtwn_wantgoo()
+    
     return indicators
 
 # -------------------------------------------
@@ -122,7 +161,8 @@ def fetch_taifex_rankings(limit=200):
                     return df.sort_values("排名").head(limit)
         return pd.DataFrame(rows).sort_values("排名").head(limit)
     except Exception as e:
-        st.error(f"抓取市值排名失敗: {e}"); return pd.DataFrame()
+        # st.error(f"抓取市值排名失敗: {e}"); 
+        return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def fetch_msci_list():
@@ -174,7 +214,6 @@ def get_dividend_yield_batch(codes):
         return data
     except: return {}
 
-# 批次取得產業資訊 (關鍵功能：篩選電子股)
 @st.cache_data(ttl=86400)
 def get_sector_batch(codes):
     if not codes: return {}
@@ -288,45 +327,30 @@ column_cfg = {
 
 # --- 電子權值 Alpha 策略 (自動篩選版) ---
 def calculate_tech_alpha_portfolio(total_capital, hedge_ratio, df_mcap):
-    # 1. 取市值前 50 大
     top50_df = df_mcap.head(50).copy()
     top50_codes = top50_df["股票代碼"].tolist()
-    
-    # 2. 抓取產業類別
     sector_map = get_sector_batch(top50_codes)
     top50_df["Sector"] = top50_df["股票代碼"].map(sector_map)
-    
-    # 3. 篩選電子/半導體股 (Technology & Semiconductors)
-    # 這裡將 "Technology" 與 "Semiconductors" 視為目標 Alpha 來源
     tech_df = top50_df[top50_df["Sector"].isin(["Technology", "Semiconductors", "Electronic Technology"])].copy()
     
-    # 若過濾完沒東西 (預防性)，回傳空
     if tech_df.empty: return None, None, pd.DataFrame()
     
-    # 4. 計算權重 (針對這群電子股重新分配)
     target_codes = tech_df["股票代碼"].tolist()
     weight_info = calculate_market_weights(target_codes)
     tech_df["raw_mcap"] = tech_df["股票代碼"].map(lambda x: weight_info.get(x, {}).get("raw_mcap", 0))
-    
     total_mcap = tech_df["raw_mcap"].sum()
     tech_df["配置權重(%)"] = (tech_df["raw_mcap"] / total_mcap)
     
-    # 5. 計算多方部位
     price_info = get_advanced_stock_info(target_codes)
     tech_df["現價"] = tech_df["股票代碼"].map(lambda x: price_info.get(x, {}).get("raw_price", 0))
-    
     tech_df["分配金額"] = total_capital * tech_df["配置權重(%)"]
     tech_df["建議買進(股)"] = (tech_df["分配金額"] / tech_df["現價"]).fillna(0).astype(int)
     
-    # 補欄位
     tech_df["股票名稱"] = tech_df["股票名稱"]
     tech_df["連結代碼"] = tech_df["股票代碼"].apply(lambda x: f"https://tw.stock.yahoo.com/quote/{x}")
-    
-    # 調整顯示
     tech_df["配置權重(%)"] = (tech_df["配置權重(%)"] * 100).map(lambda x: f"{x:.2f}%")
     tech_df["分配金額"] = tech_df["分配金額"].map(lambda x: f"${int(x):,}")
     
-    # 6. 計算空方部位 (避險)
     try:
         twii_price = yf.Ticker("^TWII").history(period="1d")["Close"].iloc[-1]
     except:
@@ -349,25 +373,71 @@ def calculate_tech_alpha_portfolio(total_capital, hedge_ratio, df_mcap):
 # 5. 主程式 UI
 # -------------------------------------------
 st.title("🚀 台股 ETF 戰情室 (全攻略版)")
-st.caption("0050 | MSCI | 高股息 | 電子 Alpha 對沖")
+st.caption("0050 | MSCI | 高股息 | 電子 Alpha 對沖 | VIXTWN 監控")
 
 m_inds = get_market_indicators()
-col1, col2, col3, col4 = st.columns(4)
+
+# 修改為 5 個欄位來容納 VIXTWN
+col1, col2, col3, col4, col5 = st.columns(5)
+
+# 1. 美國 VIX
 with col1:
     v = m_inds.get("VIX", {})
     c = "red" if v.get('delta',0) > 0 else "green"
     st.markdown(f"""<div class="metric-card" style="border-left-color: #e74c3c;"><div class="metric-label">🇺🇸 VIX 恐慌指數</div><div class="metric-value">{v.get('val','-')} <span style="font-size:14px; color:{c};">({v.get('delta','-'):+.2f})</span></div></div>""", unsafe_allow_html=True)
+
+# 2. 台灣 VIXTWN (新增功能)
 with col2:
-    st.markdown(f"""<div class="metric-card" style="border-left-color: #f1c40f;"><div class="metric-label">🇺🇸 CNN 恐懼貪婪</div><div class="metric-value" style="font-size:16px; padding-top:4px;"><a href="https://edition.cnn.com/markets/fear-and-greed" target="_blank" style="color:#fff;">點擊查看</a></div></div>""", unsafe_allow_html=True)
+    vt = m_inds.get("VIXTWN", {"val": None, "change": 0})
+    val = vt.get('val')
+    change = vt.get('change', 0)
+    
+    # 判斷邏輯
+    msg = "⚪ 正常區間"
+    msg_color = "#b2bec3" # 灰色
+    border_color = "#74b9ff" # 藍色
+
+    if val:
+        if val > 26:
+            msg = "🔴 買PUT 降部位"
+            msg_color = "#ff7675" # 紅色
+            border_color = "#ff7675"
+        elif val < 24:
+            msg = "🟢 可上槓桿"
+            msg_color = "#55efc4" # 綠色
+            border_color = "#55efc4"
+        else:
+            msg = "🟡 震盪觀察"
+            msg_color = "#ffeaa7" # 黃色
+            border_color = "#ffeaa7"
+            
+    val_display = val if val else "讀取中..."
+    
+    st.markdown(f"""
+    <div class="metric-card" style="border-left-color: {border_color};">
+        <div class="metric-label">🇹🇼 VIXTWN (玩股網)</div>
+        <div class="metric-value">{val_display}</div>
+        <div class="metric-sub" style="color: {msg_color};">{msg}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# 3. CNN 恐懼貪婪
 with col3:
+    st.markdown(f"""<div class="metric-card" style="border-left-color: #f1c40f;"><div class="metric-label">🇺🇸 CNN 恐懼貪婪</div><div class="metric-value" style="font-size:16px; padding-top:4px;"><a href="https://edition.cnn.com/markets/fear-and-greed" target="_blank" style="color:#fff;">點擊查看</a></div></div>""", unsafe_allow_html=True)
+
+# 4. 加權指數
+with col4:
     t = m_inds.get("TWII", {})
     c = "#2ecc71" if "站上" in t.get('status','') else "#e74c3c"
     st.markdown(f"""<div class="metric-card" style="border-left-color: {c};"><div class="metric-label">🇹🇼 加權指數</div><div class="metric-value">{t.get('val','-')}</div><div class="metric-label" style="color:{c};">{t.get('status','-')}</div></div>""", unsafe_allow_html=True)
-with col4:
+
+# 5. 融資維持率
+with col5:
     st.markdown(f"""<div class="metric-card" style="border-left-color: #9b59b6;"><div class="metric-label">📊 融資維持率</div><div class="metric-value" style="font-size:16px; padding-top:4px;"><a href="https://www.macromicro.me/charts/53117/taiwan-taiex-maintenance-margin" target="_blank" style="color:#fff;">MacroMicro 查詢</a></div></div>""", unsafe_allow_html=True)
 
 st.divider()
 
+# 以下保持原有程式邏輯...
 with st.spinner("正在進行全市場掃描 (含殖利率數據)..."):
     df_mcap = fetch_taifex_rankings(limit=200)
     msci_codes = fetch_msci_list()
