@@ -14,7 +14,7 @@ import numpy as np
 # -------------------------------------------
 # 1. 基礎設定 & CSS
 # -------------------------------------------
-st.set_page_config(page_title="台股 ETF 戰情室 (Alpha 修正版)", layout="wide")
+st.set_page_config(page_title="台股 ETF 戰情室 (VIXTWN 加強版)", layout="wide")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 自定義 CSS
@@ -27,14 +27,15 @@ st.markdown("""
         border-left: 4px solid #FF4B4B;
         text-align: center;
         margin-bottom: 10px;
-        height: 100px; /* 固定高度讓排版整齊 */
+        height: 110px; /* 固定高度讓排版整齊 */
         display: flex;
         flex-direction: column;
         justify-content: center;
+        align-items: center;
     }
-    .metric-label { font-size: 13px; color: #aaa; }
-    .metric-value { font-size: 20px; font-weight: bold; color: #fff; }
-    .metric-sub { font-size: 12px; margin-top: 4px; font-weight: bold; }
+    .metric-label { font-size: 13px; color: #aaa; margin-bottom: 5px;}
+    .metric-value { font-size: 22px; font-weight: bold; color: #fff; }
+    .metric-sub { font-size: 14px; margin-top: 5px; font-weight: bold; }
     
     .strategy-box {
         background-color: #1e2329;
@@ -56,37 +57,43 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://www.wantgoo.com/"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
 # -------------------------------------------
-# 2. 大盤環境指標 (包含新增的 VIXTWN)
+# 2. 大盤環境指標 (含 StockQ VIXTWN)
 # -------------------------------------------
 
-# 新增：抓取玩股網 VIXTWN
 @st.cache_data(ttl=300)
-def fetch_vixtwn_wantgoo():
-    url = "https://www.wantgoo.com/index/vixtwn"
+def fetch_vixtwn_stockq():
+    """
+    從 StockQ 抓取 VIXTWN，避開玩股網的防爬機制
+    """
+    url = "http://www.stockq.org/index/VIXTWN.php"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=10)
         if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, "lxml")
-            # 玩股網的大盤數值通常在 class 為 price 的 span 中
-            price_tag = soup.find("span", class_="price")
-            if price_tag:
-                val = float(price_tag.text.replace(",", ""))
-                
-                # 抓取漲跌 (非必要，但有比較好)
-                change = 0
-                change_tag = soup.find("span", class_="chg-val")
-                if change_tag:
-                    change = float(change_tag.text.replace(",", ""))
-                    
-                return {"val": val, "change": change}
+            # StockQ 有時編碼不固定，直接讓 pandas 解析
+            dfs = pd.read_html(io.StringIO(resp.text))
+            
+            # 遍歷所有表格尋找合理的 VIX 數值 (通常在 10 ~ 100 之間)
+            for df in dfs:
+                if df.shape[1] >= 2 and df.shape[0] >= 1:
+                    # 掃描表格內容
+                    for col in range(df.shape[1]):
+                        for row in range(df.shape[0]):
+                            val = df.iloc[row, col]
+                            try:
+                                v_float = float(val)
+                                # VIX 合理區間判斷，避免抓到日期或年份
+                                if 10 < v_float < 100:
+                                    return {"val": v_float}
+                            except:
+                                continue
     except Exception as e:
-        print(f"VIXTWN Error: {e}")
-    return {"val": None, "change": 0}
+        print(f"StockQ VIX Error: {e}")
+        
+    return {"val": None}
 
 @st.cache_data(ttl=300)
 def get_market_indicators():
@@ -116,13 +123,13 @@ def get_market_indicators():
         else: indicators["TWII"] = {"val": "-", "status": "無法取得"}
     except: indicators["TWII"] = {"val": "-", "status": "-"}
     
-    # 3. 台灣 VIXTWN (玩股網)
-    indicators["VIXTWN"] = fetch_vixtwn_wantgoo()
+    # 3. 台灣 VIXTWN (StockQ)
+    indicators["VIXTWN"] = fetch_vixtwn_stockq()
     
     return indicators
 
 # -------------------------------------------
-# 3. 數據抓取核心
+# 3. 數據抓取核心 (ETF/市值/權重)
 # -------------------------------------------
 
 @st.cache_data(ttl=3600)
@@ -161,7 +168,6 @@ def fetch_taifex_rankings(limit=200):
                     return df.sort_values("排名").head(limit)
         return pd.DataFrame(rows).sort_values("排名").head(limit)
     except Exception as e:
-        # st.error(f"抓取市值排名失敗: {e}"); 
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
@@ -325,12 +331,13 @@ column_cfg = {
     "raw_turnover": None, "raw_vol": None, "raw_yield": None
 }
 
-# --- 電子權值 Alpha 策略 (自動篩選版) ---
+# --- 電子權值 Alpha 策略 ---
 def calculate_tech_alpha_portfolio(total_capital, hedge_ratio, df_mcap):
     top50_df = df_mcap.head(50).copy()
     top50_codes = top50_df["股票代碼"].tolist()
     sector_map = get_sector_batch(top50_codes)
     top50_df["Sector"] = top50_df["股票代碼"].map(sector_map)
+    
     tech_df = top50_df[top50_df["Sector"].isin(["Technology", "Semiconductors", "Electronic Technology"])].copy()
     
     if tech_df.empty: return None, None, pd.DataFrame()
@@ -338,6 +345,7 @@ def calculate_tech_alpha_portfolio(total_capital, hedge_ratio, df_mcap):
     target_codes = tech_df["股票代碼"].tolist()
     weight_info = calculate_market_weights(target_codes)
     tech_df["raw_mcap"] = tech_df["股票代碼"].map(lambda x: weight_info.get(x, {}).get("raw_mcap", 0))
+    
     total_mcap = tech_df["raw_mcap"].sum()
     tech_df["配置權重(%)"] = (tech_df["raw_mcap"] / total_mcap)
     
@@ -373,11 +381,11 @@ def calculate_tech_alpha_portfolio(total_capital, hedge_ratio, df_mcap):
 # 5. 主程式 UI
 # -------------------------------------------
 st.title("🚀 台股 ETF 戰情室 (全攻略版)")
-st.caption("0050 | MSCI | 高股息 | 電子 Alpha 對沖 | VIXTWN 監控")
+st.caption("0050 | MSCI | 高股息 | VIXTWN 監控 | Alpha 對沖")
 
 m_inds = get_market_indicators()
 
-# 修改為 5 個欄位來容納 VIXTWN
+# 調整為 5 欄顯示 (新增 StockQ VIXTWN)
 col1, col2, col3, col4, col5 = st.columns(5)
 
 # 1. 美國 VIX
@@ -386,36 +394,34 @@ with col1:
     c = "red" if v.get('delta',0) > 0 else "green"
     st.markdown(f"""<div class="metric-card" style="border-left-color: #e74c3c;"><div class="metric-label">🇺🇸 VIX 恐慌指數</div><div class="metric-value">{v.get('val','-')} <span style="font-size:14px; color:{c};">({v.get('delta','-'):+.2f})</span></div></div>""", unsafe_allow_html=True)
 
-# 2. 台灣 VIXTWN (新增功能)
+# 2. 台灣 VIXTWN (StockQ)
 with col2:
-    vt = m_inds.get("VIXTWN", {"val": None, "change": 0})
+    vt = m_inds.get("VIXTWN", {"val": None})
     val = vt.get('val')
-    change = vt.get('change', 0)
     
-    # 判斷邏輯
     msg = "⚪ 正常區間"
-    msg_color = "#b2bec3" # 灰色
-    border_color = "#74b9ff" # 藍色
+    msg_color = "#b2bec3"
+    border_color = "#74b9ff"
 
     if val:
         if val > 26:
             msg = "🔴 買PUT 降部位"
-            msg_color = "#ff7675" # 紅色
+            msg_color = "#ff7675"
             border_color = "#ff7675"
         elif val < 24:
             msg = "🟢 可上槓桿"
-            msg_color = "#55efc4" # 綠色
+            msg_color = "#55efc4"
             border_color = "#55efc4"
         else:
             msg = "🟡 震盪觀察"
-            msg_color = "#ffeaa7" # 黃色
+            msg_color = "#ffeaa7"
             border_color = "#ffeaa7"
             
-    val_display = val if val else "讀取中..."
+    val_display = f"{val:.2f}" if val else "讀取中..."
     
     st.markdown(f"""
     <div class="metric-card" style="border-left-color: {border_color};">
-        <div class="metric-label">🇹🇼 VIXTWN (玩股網)</div>
+        <div class="metric-label">🇹🇼 VIXTWN (StockQ)</div>
         <div class="metric-value">{val_display}</div>
         <div class="metric-sub" style="color: {msg_color};">{msg}</div>
     </div>
@@ -429,7 +435,7 @@ with col3:
 with col4:
     t = m_inds.get("TWII", {})
     c = "#2ecc71" if "站上" in t.get('status','') else "#e74c3c"
-    st.markdown(f"""<div class="metric-card" style="border-left-color: {c};"><div class="metric-label">🇹🇼 加權指數</div><div class="metric-value">{t.get('val','-')}</div><div class="metric-label" style="color:{c};">{t.get('status','-')}</div></div>""", unsafe_allow_html=True)
+    st.markdown(f"""<div class="metric-card" style="border-left-color: {c};"><div class="metric-label">🇹🇼 加權指數</div><div class="metric-value">{t.get('val','-')}</div><div class="metric-label" style="color:{c}; font-size:11px;">{t.get('status','-')}</div></div>""", unsafe_allow_html=True)
 
 # 5. 融資維持率
 with col5:
@@ -437,7 +443,7 @@ with col5:
 
 st.divider()
 
-# 以下保持原有程式邏輯...
+# 資料抓取與側邊欄
 with st.spinner("正在進行全市場掃描 (含殖利率數據)..."):
     df_mcap = fetch_taifex_rankings(limit=200)
     msci_codes = fetch_msci_list()
@@ -445,7 +451,7 @@ with st.spinner("正在進行全市場掃描 (含殖利率數據)..."):
     for etf in ["0050", "0056", "00878", "00919"]:
         holdings[etf] = set(fetch_etf_holdings(etf))
 
-    if df_mcap.empty: st.error("無法取得資料"); st.stop()
+    if df_mcap.empty: st.error("無法取得市值資料，請稍後再試。"); st.stop()
 
 with st.sidebar:
     st.header("📡 市場雷達")
@@ -456,6 +462,7 @@ with st.sidebar:
     if st.button("🔄 更新行情"): st.cache_data.clear(); st.rerun()
     st.caption(f"Update: {datetime.now().strftime('%H:%M')}")
 
+# 分頁內容
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["🇹🇼 0050 權值", "🌍 MSCI 外資", "💰 0056 高股息", "📊 全市場權重", "⚡ 電子 Alpha 對沖"])
 
 # Tab 1: 0050
