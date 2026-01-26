@@ -4,21 +4,34 @@
 """
 import os
 import re
+import io
 import time
 import random
+import tempfile
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from enum import Enum
+from urllib.parse import unquote
 
 import pandas as pd
 import requests
 import streamlit as st
 
 try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
+
+try:
     import yfinance as yf
 except ImportError:
     yf = None
+
+try:
+    import gdown
+except ImportError:
+    gdown = None
 
 
 # =============================================================================
@@ -94,18 +107,277 @@ ACTIVE_ETFS = {
         "name": "永豐台灣加權",
         "manager": "永豐投信",
         "description": "主動管理型台股 ETF",
+        "drive_folder": "https://drive.google.com/drive/folders/1mK6gf2kYPA2Mkh-JqG5J197nJQ8KONOd",
+        "file_pattern": r"ETF_Investment_Portfolio_(\d{8})\.xlsx",
     },
     "00905": {
         "name": "FT 臺灣 Smart",
         "manager": "富蘭克林華美",
         "description": "主動管理型台股 ETF",
+        "drive_folder": None,
+        "file_pattern": None,
     },
     "00912": {
         "name": "中信臺灣智慧 50",
         "manager": "中國信託",
         "description": "主動管理型台股 ETF",
+        "drive_folder": None,
+        "file_pattern": None,
     },
 }
+
+
+# =============================================================================
+# Google Drive 整合
+# =============================================================================
+
+def extract_folder_id(folder_url: str) -> str:
+    """從 Google Drive 連結提取 folder ID"""
+    m = re.search(r'/folders/([a-zA-Z0-9_-]+)', folder_url)
+    if not m:
+        raise ValueError("無法從連結解析出 folder id")
+    return m.group(1)
+
+
+def normalize_filename(s: str) -> str:
+    """標準化檔名"""
+    return re.sub(r'\s+', ' ', (s or '').strip()).lower()
+
+
+def list_files_from_embedded(folder_id: str) -> List[Dict[str, str]]:
+    """從 embedded view 列出檔案"""
+    if BeautifulSoup is None:
+        return []
+
+    url = f"https://drive.google.com/embeddedfolderview?id={folder_id}#list"
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "html.parser")
+        out = []
+
+        # 方法1: 從 a[href*='?id='] 提取
+        for a in soup.select("div#folder-view a[href*='?id=']"):
+            href = a.get("href", "")
+            name = (a.text or "").strip()
+            if "id=" in href:
+                fid = href.split("id=")[-1]
+                if fid and name:
+                    out.append({"name": name, "id": fid})
+
+        # 方法2: 從 /file/d/ 格式提取
+        for a in soup.select("a"):
+            href = a.get("href", "") or ""
+            name = (a.text or "").strip()
+            m = re.search(r"/file/d/([a-zA-Z0-9_-]+)/", href)
+            if m and name:
+                out.append({"name": name, "id": m.group(1)})
+
+        return out
+    except Exception as e:
+        print(f"[list_from_embedded] 解析失敗: {e}")
+        return []
+
+
+def list_files_from_drive_page(folder_id: str) -> List[Dict[str, str]]:
+    """從 drive page 列出檔案"""
+    if BeautifulSoup is None:
+        return []
+
+    url = f"https://drive.google.com/drive/folders/{folder_id}"
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        html = resp.text
+        soup = BeautifulSoup(html, "html.parser")
+        out = []
+
+        # 從 <a> 標籤提取
+        for a in soup.select("a"):
+            href = a.get("href", "") or ""
+            text = (a.text or "").strip()
+            m = re.search(r"/file/d/([a-zA-Z0-9_-]+)/", href)
+            if m:
+                fid = m.group(1)
+                name = text or a.get("aria-label") or a.get("title") or ""
+                if name:
+                    out.append({"name": name, "id": fid})
+
+        # 從 JSON-like 結構提取
+        for m in re.finditer(
+            r'"doc_id"\s*:\s*"(?P<id>[a-zA-Z0-9_-]+)".{0,200}?"title"\s*:\s*"(?P<name>[^"]+)"',
+            html, re.DOTALL
+        ):
+            fid = m.group("id")
+            name = unquote(m.group("name"))
+            out.append({"name": name, "id": fid})
+
+        # 從 data-id 屬性提取
+        for tag in soup.find_all(attrs={"data-id": True}):
+            fid = tag.get("data-id")
+            name = tag.get("aria-label") or tag.get("title") or tag.get_text(strip=True)
+            if fid and name:
+                out.append({"name": name, "id": fid})
+
+        return out
+    except Exception as e:
+        print(f"[list_from_drive_page] 解析失敗: {e}")
+        return []
+
+
+@st.cache_data(ttl=300)
+def list_drive_folder_files(folder_url: str) -> List[Dict[str, str]]:
+    """
+    列出 Google Drive 共享資料夾中的檔案
+    返回: [{"name": "filename.xlsx", "id": "file_id"}, ...]
+    """
+    folder_id = extract_folder_id(folder_url)
+    items = []
+    seen = set()
+
+    # 嘗試兩種方法
+    for getter in (list_files_from_embedded, list_files_from_drive_page):
+        lst = getter(folder_id)
+        for it in lst:
+            name = it.get("name") or ""
+            fid = it.get("id") or ""
+            key = (name, fid)
+            if name and fid and key not in seen:
+                seen.add(key)
+                items.append({"name": name, "id": fid})
+
+    return items
+
+
+def extract_dates_from_files(files: List[Dict[str, str]], pattern: str) -> List[Dict[str, Any]]:
+    """
+    從檔案列表中提取日期
+    返回: [{"date": "20260114", "name": "filename.xlsx", "id": "file_id"}, ...]
+    """
+    results = []
+    regex = re.compile(pattern, re.IGNORECASE)
+
+    for f in files:
+        name = f.get("name", "")
+        match = regex.search(name)
+        if match:
+            date_str = match.group(1)
+            results.append({
+                "date": date_str,
+                "name": name,
+                "id": f["id"],
+                "display": f"{date_str[:4]}/{date_str[4:6]}/{date_str[6:8]}"
+            })
+
+    # 按日期排序 (最新的在前)
+    results.sort(key=lambda x: x["date"], reverse=True)
+    return results
+
+
+def download_file_from_drive(file_id: str, output_path: str = None) -> Optional[str]:
+    """
+    從 Google Drive 下載檔案
+    返回: 檔案路徑 或 None
+    """
+    if gdown is None:
+        st.error("需要安裝 gdown 套件: pip install gdown")
+        return None
+
+    try:
+        if output_path is None:
+            # 使用臨時檔案
+            fd, output_path = tempfile.mkstemp(suffix='.xlsx')
+            os.close(fd)
+
+        gdown.download(id=file_id, output=output_path, quiet=True, use_cookies=False)
+
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return output_path
+        return None
+    except Exception as e:
+        print(f"下載失敗: {e}")
+        return None
+
+
+def download_file_to_bytes(file_id: str) -> Optional[bytes]:
+    """
+    從 Google Drive 下載檔案到記憶體
+    返回: bytes 或 None
+    """
+    # 嘗試直接下載
+    url = f"https://drive.google.com/uc?export=download&id={file_id}"
+    try:
+        resp = requests.get(url, timeout=30)
+        if resp.status_code == 200 and len(resp.content) > 1000:
+            return resp.content
+    except Exception:
+        pass
+
+    # 使用 gdown
+    if gdown is not None:
+        try:
+            temp_path = download_file_from_drive(file_id)
+            if temp_path and os.path.exists(temp_path):
+                with open(temp_path, 'rb') as f:
+                    content = f.read()
+                os.remove(temp_path)
+                return content
+        except Exception:
+            pass
+
+    return None
+
+
+@st.cache_data(ttl=600)
+def get_available_dates(etf_code: str) -> List[Dict[str, Any]]:
+    """
+    取得指定 ETF 可用的日期列表
+    """
+    etf_info = ACTIVE_ETFS.get(etf_code)
+    if not etf_info or not etf_info.get("drive_folder"):
+        return []
+
+    folder_url = etf_info["drive_folder"]
+    pattern = etf_info.get("file_pattern", r"(\d{8})\.xlsx")
+
+    try:
+        files = list_drive_folder_files(folder_url)
+        dates = extract_dates_from_files(files, pattern)
+        return dates
+    except Exception as e:
+        print(f"取得日期列表失敗: {e}")
+        return []
+
+
+def load_holdings_from_drive(file_info: Dict[str, Any]) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    """
+    從 Google Drive 載入持股資料
+    返回: (raw_df, holdings_df) 或 (None, None)
+    """
+    file_id = file_info.get("id")
+    if not file_id:
+        return None, None
+
+    content = download_file_to_bytes(file_id)
+    if content is None:
+        return None, None
+
+    try:
+        # 讀取 raw
+        df_raw = pd.read_excel(io.BytesIO(content), header=None)
+
+        # 找標題列
+        header_idx = find_stock_header_index(df_raw)
+        if header_idx is None:
+            return None, None
+
+        # 讀取 holdings
+        df_holdings = pd.read_excel(io.BytesIO(content), header=header_idx)
+
+        return df_raw, df_holdings
+    except Exception as e:
+        print(f"解析 Excel 失敗: {e}")
+        return None, None
 
 
 # =============================================================================

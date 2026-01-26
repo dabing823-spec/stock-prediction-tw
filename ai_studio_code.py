@@ -81,6 +81,8 @@ from active_etf_tracker import (
     format_amount,
     format_shares,
     format_pct,
+    get_available_dates,
+    load_holdings_from_drive,
 )
 
 
@@ -120,6 +122,84 @@ def load_market_data():
 # =============================================================================
 # 主程式
 # =============================================================================
+
+def _render_etf_analysis_result(result, etf_code: str, date_new: str, date_old: str):
+    """渲染 ETF 持股分析結果 (共用函數)"""
+    # ETF 摘要
+    render_etf_summary_card(result.summary, date_new, date_old)
+
+    # 變動統計
+    render_holding_change_summary(result)
+
+    st.divider()
+
+    # 變動明細
+    col_changes1, col_changes2 = st.columns(2)
+
+    with col_changes1:
+        render_position_change_card(
+            "新建倉 (重點追蹤!)",
+            result.new_positions,
+            "new",
+            "🌟",
+            "#00b894"
+        )
+        render_position_change_card(
+            "加碼中",
+            [h for h in result.increased if h.change_pct >= 10],
+            "increase",
+            "📈",
+            "#55efc4"
+        )
+
+    with col_changes2:
+        render_position_change_card(
+            "出清 (避開)",
+            result.exited,
+            "exit",
+            "🚫",
+            "#ff7675"
+        )
+        render_position_change_card(
+            "減碼中",
+            [h for h in result.decreased if h.change_pct <= -10],
+            "decrease",
+            "📉",
+            "#fdcb6e"
+        )
+
+    st.divider()
+
+    # Top 持股
+    render_top_holdings_table(result.top_holdings)
+
+    # 完整資料表
+    with st.expander("📋 查看完整持股變動明細"):
+        df_display = pd.DataFrame([
+            {
+                "代碼": h.code,
+                "名稱": h.name,
+                "權重(%)": f"{h.weight:.2f}" if h.weight else "—",
+                "前股數": format_shares(h.shares_old),
+                "今股數": format_shares(h.shares_new),
+                "股數變化": format_shares(h.shares_change),
+                "變化%": format_pct(h.change_pct),
+                "類型": h.change_type.value,
+                "現價": f"${h.price:.2f}" if h.price else "—",
+                "金額變化": format_amount(h.value_change) if h.value_change else "—",
+            }
+            for h in result.all_holdings
+        ])
+        st.dataframe(df_display, hide_index=True, use_container_width=True)
+
+    # 下載報告
+    st.download_button(
+        "📥 下載分析報告 (CSV)",
+        df_display.to_csv(index=False).encode('utf-8-sig'),
+        file_name=f"{etf_code}_changes_{date_old}_to_{date_new}.csv",
+        mime="text/csv"
+    )
+
 
 def main():
     # 標題
@@ -692,44 +772,138 @@ def main():
 
         st.divider()
 
-        # 檔案上傳區
-        st.subheader("📁 上傳持股明細")
-        st.caption("請從投信官網下載 ETF 持股明細 Excel 檔案")
-
-        col_upload1, col_upload2 = st.columns(2)
-
-        with col_upload1:
-            st.markdown("#### 📅 今日持股")
-            file_new = st.file_uploader(
-                "上傳今日持股 Excel",
-                type=['xlsx', 'xls'],
-                key="active_etf_new",
-                help="格式: ETF_Investment_Portfolio_YYYYMMDD.xlsx"
+        # 資料來源選擇
+        has_drive = etf_info.get("drive_folder") is not None
+        if has_drive:
+            data_source = st.radio(
+                "📂 資料來源",
+                ["☁️ Google Drive (自動)", "📁 手動上傳"],
+                horizontal=True,
+                index=0
             )
-            date_new = st.text_input("今日日期 (YYYYMMDD)", value=datetime.now().strftime("%Y%m%d"), key="date_new")
+        else:
+            data_source = "📁 手動上傳"
+            st.warning(f"⚠️ {etf_info['name']} 尚未設定 Google Drive 資料夾，請使用手動上傳")
 
-        with col_upload2:
-            st.markdown("#### 📅 比較日持股")
-            file_old = st.file_uploader(
-                "上傳比較日持股 Excel",
-                type=['xlsx', 'xls'],
-                key="active_etf_old",
-                help="格式: ETF_Investment_Portfolio_YYYYMMDD.xlsx"
-            )
-            date_old = st.text_input("比較日日期 (YYYYMMDD)", value=(datetime.now() - timedelta(days=2)).strftime("%Y%m%d"), key="date_old")
+        # ========== Google Drive 模式 ==========
+        if "Google Drive" in data_source:
+            st.subheader("☁️ 從 Google Drive 載入")
 
-        if file_new and file_old:
-            try:
-                with st.spinner("解析持股資料中..."):
-                    # 解析 Excel
-                    df_raw_new, df_holdings_new = parse_holdings_excel(file_new, is_streamlit_upload=True)
-                    file_old.seek(0)
-                    df_raw_old, df_holdings_old = parse_holdings_excel(file_old, is_streamlit_upload=True)
+            # 取得可用日期
+            with st.spinner("正在掃描 Google Drive 資料夾..."):
+                available_dates = get_available_dates(selected_etf)
 
+            if not available_dates:
+                st.error("❌ 無法取得檔案列表，請確認 Google Drive 資料夾權限或改用手動上傳")
+            else:
+                st.success(f"✅ 找到 {len(available_dates)} 個持股明細檔案")
+
+                # 日期選擇
+                col_date1, col_date2 = st.columns(2)
+
+                date_options = {f"{d['display']} ({d['date']})": d for d in available_dates}
+
+                with col_date1:
+                    st.markdown("#### 📅 今日持股")
+                    selected_new = st.selectbox(
+                        "選擇日期",
+                        options=list(date_options.keys()),
+                        index=0,
+                        key="drive_date_new"
+                    )
+                    date_info_new = date_options[selected_new]
+
+                with col_date2:
+                    st.markdown("#### 📅 比較日持股")
+                    # 預設選第二個日期
+                    default_idx = min(1, len(date_options) - 1)
+                    selected_old = st.selectbox(
+                        "選擇日期",
+                        options=list(date_options.keys()),
+                        index=default_idx,
+                        key="drive_date_old"
+                    )
+                    date_info_old = date_options[selected_old]
+
+                # 選項
+                fetch_prices = st.checkbox("取得即時股價 (較慢但可計算金額)", value=False, key="drive_fetch_prices")
+
+                # 開始分析
+                if st.button("🚀 開始比較分析", type="primary", use_container_width=True):
+                    try:
+                        # 下載並解析檔案
+                        with st.spinner(f"正在下載 {date_info_new['name']}..."):
+                            df_raw_new, df_holdings_new = load_holdings_from_drive(date_info_new)
+
+                        if df_raw_new is None:
+                            st.error(f"❌ 無法下載或解析: {date_info_new['name']}")
+                            st.stop()
+
+                        with st.spinner(f"正在下載 {date_info_old['name']}..."):
+                            df_raw_old, df_holdings_old = load_holdings_from_drive(date_info_old)
+
+                        if df_raw_old is None:
+                            st.error(f"❌ 無法下載或解析: {date_info_old['name']}")
+                            st.stop()
+
+                        # 比較持股
+                        with st.spinner("比較持股變化中..." + (" (含股價查詢)" if fetch_prices else "")):
+                            result = compare_holdings(
+                                df_holdings_new, df_holdings_old,
+                                df_raw_new, df_raw_old,
+                                date_info_new['date'], date_info_old['date'],
+                                fetch_prices=fetch_prices
+                            )
+
+                        st.success(f"✅ 分析完成！比較期間: {date_info_old['display']} → {date_info_new['display']}")
+
+                        # 顯示結果
+                        _render_etf_analysis_result(result, selected_etf, date_info_new['date'], date_info_old['date'])
+
+                    except Exception as e:
+                        st.error(f"❌ 分析錯誤: {str(e)}")
+                        import traceback
+                        st.code(traceback.format_exc())
+
+        # ========== 手動上傳模式 ==========
+        else:
+            st.subheader("📁 手動上傳持股明細")
+            st.caption("請從投信官網下載 ETF 持股明細 Excel 檔案")
+
+            col_upload1, col_upload2 = st.columns(2)
+
+            with col_upload1:
+                st.markdown("#### 📅 今日持股")
+                file_new = st.file_uploader(
+                    "上傳今日持股 Excel",
+                    type=['xlsx', 'xls'],
+                    key="active_etf_new",
+                    help="格式: ETF_Investment_Portfolio_YYYYMMDD.xlsx"
+                )
+                date_new = st.text_input("今日日期 (YYYYMMDD)", value=datetime.now().strftime("%Y%m%d"), key="date_new")
+
+            with col_upload2:
+                st.markdown("#### 📅 比較日持股")
+                file_old = st.file_uploader(
+                    "上傳比較日持股 Excel",
+                    type=['xlsx', 'xls'],
+                    key="active_etf_old",
+                    help="格式: ETF_Investment_Portfolio_YYYYMMDD.xlsx"
+                )
+                date_old = st.text_input("比較日日期 (YYYYMMDD)", value=(datetime.now() - timedelta(days=2)).strftime("%Y%m%d"), key="date_old")
+
+            if file_new and file_old:
+                try:
                     # 比較持股
                     fetch_prices = st.checkbox("取得即時股價 (較慢)", value=False, key="fetch_prices")
 
                     if st.button("🔍 開始比較分析", type="primary", use_container_width=True):
+                        with st.spinner("解析持股資料中..."):
+                            # 解析 Excel
+                            df_raw_new, df_holdings_new = parse_holdings_excel(file_new, is_streamlit_upload=True)
+                            file_old.seek(0)
+                            df_raw_old, df_holdings_old = parse_holdings_excel(file_old, is_streamlit_upload=True)
+
                         with st.spinner("比較持股變化中..." + (" (含股價查詢)" if fetch_prices else "")):
                             result = compare_holdings(
                                 df_holdings_new, df_holdings_old,
@@ -740,114 +914,43 @@ def main():
 
                         st.success(f"✅ 分析完成！比較期間: {date_old} → {date_new}")
 
-                        # ETF 摘要
-                        render_etf_summary_card(result.summary, date_new, date_old)
+                        # 顯示結果
+                        _render_etf_analysis_result(result, selected_etf, date_new, date_old)
 
-                        # 變動統計
-                        render_holding_change_summary(result)
+                except Exception as e:
+                    st.error(f"❌ 解析錯誤: {str(e)}")
+                    st.caption("請確認上傳的檔案格式正確，需包含「股票代號」「股票名稱」「股數」等欄位")
 
-                        st.divider()
+            else:
+                st.warning("👆 請上傳兩個日期的持股明細 Excel 檔案進行比較")
 
-                        # 變動明細
-                        col_changes1, col_changes2 = st.columns(2)
+        # 使用說明
+        with st.expander("📖 使用說明"):
+            st.markdown("""
+            ### 資料來源
 
-                        with col_changes1:
-                            render_position_change_card(
-                                "新建倉 (重點追蹤!)",
-                                result.new_positions,
-                                "new",
-                                "🌟",
-                                "#00b894"
-                            )
-                            render_position_change_card(
-                                "加碼中",
-                                [h for h in result.increased if h.change_pct >= 10],
-                                "increase",
-                                "📈",
-                                "#55efc4"
-                            )
+            **☁️ Google Drive (自動)**
+            - 自動從設定的 Google Drive 共享資料夾抓取檔案
+            - 目前支援: 00981A 永豐台灣加權
 
-                        with col_changes2:
-                            render_position_change_card(
-                                "出清 (避開)",
-                                result.exited,
-                                "exit",
-                                "🚫",
-                                "#ff7675"
-                            )
-                            render_position_change_card(
-                                "減碼中",
-                                [h for h in result.decreased if h.change_pct <= -10],
-                                "decrease",
-                                "📉",
-                                "#fdcb6e"
-                            )
+            **📁 手動上傳**
+            - 從投信官網下載持股明細 Excel
+            - 適用於未設定 Google Drive 的 ETF
 
-                        st.divider()
+            ### 檔案格式要求
 
-                        # Top 持股
-                        render_top_holdings_table(result.top_holdings)
+            Excel 檔案需包含以下欄位：
+            - 股票代號
+            - 股票名稱
+            - 股數
+            - 持股權重 (可選)
 
-                        # 完整資料表
-                        with st.expander("📋 查看完整持股變動明細"):
-                            df_display = pd.DataFrame([
-                                {
-                                    "代碼": h.code,
-                                    "名稱": h.name,
-                                    "權重(%)": f"{h.weight:.2f}" if h.weight else "—",
-                                    "前股數": format_shares(h.shares_old),
-                                    "今股數": format_shares(h.shares_new),
-                                    "股數變化": format_shares(h.shares_change),
-                                    "變化%": format_pct(h.change_pct),
-                                    "類型": h.change_type.value,
-                                    "現價": f"${h.price:.2f}" if h.price else "—",
-                                    "金額變化": format_amount(h.value_change) if h.value_change else "—",
-                                }
-                                for h in result.all_holdings
-                            ])
-                            st.dataframe(df_display, hide_index=True, use_container_width=True)
+            ### 策略應用
 
-                        # 下載報告
-                        st.download_button(
-                            "📥 下載分析報告 (CSV)",
-                            df_display.to_csv(index=False).encode('utf-8-sig'),
-                            file_name=f"{selected_etf}_changes_{date_old}_to_{date_new}.csv",
-                            mime="text/csv"
-                        )
-
-            except Exception as e:
-                st.error(f"❌ 解析錯誤: {str(e)}")
-                st.caption("請確認上傳的檔案格式正確，需包含「股票代號」「股票名稱」「股數」等欄位")
-
-        else:
-            st.warning("👆 請上傳兩個日期的持股明細 Excel 檔案進行比較")
-
-            # 使用說明
-            with st.expander("📖 使用說明"):
-                st.markdown("""
-                ### 如何取得持股明細？
-
-                1. **永豐投信 (00981A)**
-                   - 前往 [永豐投信官網](https://www.sinopac.com/sinopacFunds/)
-                   - 找到 ETF 持股明細下載區
-
-                2. **其他投信**
-                   - 各投信官網通常有 ETF 持股明細 Excel 下載
-
-                ### 檔案格式要求
-
-                Excel 檔案需包含以下欄位：
-                - 股票代號
-                - 股票名稱
-                - 股數
-                - 持股權重 (可選)
-
-                ### 策略應用
-
-                - **新建倉**: ETF 剛開始買進的標的，可能是經理人看好的新機會
-                - **大幅加碼**: 經理人持續看好，可考慮跟進
-                - **減碼/出清**: ETF 正在退出的標的，宜避開
-                """)
+            - **🌟 新建倉**: ETF 剛開始買進的標的，可能是經理人看好的新機會 → **重點追蹤！**
+            - **📈 大幅加碼**: 經理人持續看好，可考慮跟進
+            - **📉 減碼/🚫 出清**: ETF 正在退出的標的，宜避開
+            """)
 
 
 if __name__ == "__main__":
