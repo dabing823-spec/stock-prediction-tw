@@ -1074,154 +1074,126 @@ def render_etf_summary_card(summary, date_new: str, date_old: str):
             return "—"
         return f"${v:.2f}"
 
-    def fmt_change(v, is_pct=False):
+    def fmt_delta(v):
         if v is None:
-            return "—"
-        color = "#55efc4" if v > 0 else "#ff7675" if v < 0 else "#b2bec3"
-        sign = "+" if v > 0 else ""
-        if is_pct:
-            return f'<span style="color: {color};">{sign}{v:.2f}%</span>'
-        return f'<span style="color: {color};">{format_amount(v)}</span>'
+            return None
+        return v
 
-    st.markdown(f"""
-    <div class="strategy-box slide-in">
-        <div class="strategy-title">📊 ETF 摘要 ({date_old} → {date_new})</div>
-        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 12px;">
-            <div style="text-align: center; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px;">
-                <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-bottom: 4px;">流通單位數</div>
-                <div style="color: #74b9ff; font-size: 18px; font-weight: 600;">{fmt_units(summary.units_outstanding)}</div>
-                <div style="font-size: 12px; margin-top: 4px;">{fmt_change(summary.units_change)}</div>
-            </div>
-            <div style="text-align: center; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px;">
-                <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-bottom: 4px;">現金部位</div>
-                <div style="color: #ffeaa7; font-size: 18px; font-weight: 600;">{fmt_cash(summary.cash_amount)}</div>
-                <div style="font-size: 12px; margin-top: 4px;">{fmt_change(summary.cash_change)}</div>
-            </div>
-            <div style="text-align: center; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px;">
-                <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-bottom: 4px;">現金權重</div>
-                <div style="color: #a29bfe; font-size: 18px; font-weight: 600;">{fmt_pct(summary.cash_weight)}</div>
-                <div style="font-size: 12px; margin-top: 4px;">{fmt_change(summary.cash_weight_change, is_pct=True)}</div>
-            </div>
-            <div style="text-align: center; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px;">
-                <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-bottom: 4px;">每單位淨值</div>
-                <div style="color: #55efc4; font-size: 18px; font-weight: 600;">{fmt_nav(summary.nav_per_unit)}</div>
-                <div style="font-size: 12px; margin-top: 4px;">{fmt_change(summary.nav_change)}</div>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.subheader(f"📊 ETF 摘要 ({date_old} → {date_new})")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            label="流通單位數",
+            value=fmt_units(summary.units_outstanding),
+            delta=fmt_units(summary.units_change) if summary.units_change else None
+        )
+    with col2:
+        st.metric(
+            label="現金部位",
+            value=fmt_cash(summary.cash_amount),
+            delta=fmt_cash(summary.cash_change) if summary.cash_change else None
+        )
+    with col3:
+        st.metric(
+            label="現金權重",
+            value=fmt_pct(summary.cash_weight),
+            delta=f"{summary.cash_weight_change:.2f}%" if summary.cash_weight_change else None
+        )
+    with col4:
+        st.metric(
+            label="每單位淨值",
+            value=fmt_nav(summary.nav_per_unit),
+            delta=f"{summary.nav_change:.2f}" if summary.nav_change else None
+        )
 
 
 def render_position_change_card(title: str, holdings: list, change_type: str, icon: str, color: str):
     """渲染持股變動卡片"""
+    import pandas as pd
     from active_etf_tracker import format_shares, format_pct, format_amount
 
+    count_str = f"({len(holdings)} 檔)" if len(holdings) > 0 else ""
+
+    # 使用 Streamlit 原生元件
+    if color == "#00b894":
+        st.success(f"{icon} **{title}** {count_str}")
+    elif color == "#55efc4":
+        st.success(f"{icon} **{title}** {count_str}")
+    elif color == "#ff7675":
+        st.error(f"{icon} **{title}** {count_str}")
+    elif color == "#fdcb6e":
+        st.warning(f"{icon} **{title}** {count_str}")
+    else:
+        st.info(f"{icon} **{title}** {count_str}")
+
     if not holdings:
-        st.markdown(f"""
-        <div style="padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px; border-left: 4px solid {color}; margin-bottom: 12px;">
-            <div style="font-size: 16px; font-weight: 600; color: {color};">{icon} {title}</div>
-            <div style="color: rgba(255,255,255,0.5); margin-top: 8px;">無變動</div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.caption("無變動")
         return
 
-    items_html = ""
-    for h in holdings[:10]:  # 最多顯示 10 筆
+    # 建立 DataFrame 顯示
+    rows = []
+    for h in holdings[:10]:
         value_str = format_amount(h.value_change) if h.value_change else "—"
         pct_str = format_pct(h.change_pct) if h.change_pct else ""
 
         if change_type == "new":
-            detail = f"股數: {format_shares(h.shares_new)} | 權重: {h.weight:.2f}%"
+            detail = f"{format_shares(h.shares_new)} 股 | {h.weight:.2f}%"
         elif change_type == "exit":
-            detail = f"原股數: {format_shares(h.shares_old)}"
+            detail = f"原 {format_shares(h.shares_old)} 股"
         else:
             detail = f"{format_shares(h.shares_old)} → {format_shares(h.shares_new)} ({pct_str})"
 
-        items_html += f"""
-        <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
-            <div>
-                <div style="font-weight: 600; color: #fff;">{h.code} {h.name}</div>
-                <div style="font-size: 12px; color: rgba(255,255,255,0.5);">{detail}</div>
-            </div>
-            <div style="text-align: right;">
-                <div style="color: {color}; font-weight: 600; font-family: 'JetBrains Mono', monospace;">{value_str}</div>
-            </div>
-        </div>
-        """
+        rows.append({
+            "代碼": h.code,
+            "名稱": h.name,
+            "變動": detail,
+            "金額": value_str
+        })
 
-    count_str = f"({len(holdings)} 檔)" if len(holdings) > 0 else ""
-
-    st.markdown(f"""
-    <div style="padding: 16px; background: rgba(0,0,0,0.2); border-radius: 12px; border-left: 4px solid {color}; margin-bottom: 12px;">
-        <div style="font-size: 16px; font-weight: 600; color: {color}; margin-bottom: 12px;">{icon} {title} {count_str}</div>
-        {items_html}
-    </div>
-    """, unsafe_allow_html=True)
+    df = pd.DataFrame(rows)
+    st.dataframe(df, hide_index=True, use_container_width=True)
 
 
 def render_top_holdings_table(holdings: list):
     """渲染 Top 持股表格"""
+    import pandas as pd
+
+    st.subheader("🏆 Top 15 持股")
+
     if not holdings:
         st.info("無持股資料")
         return
 
     from active_etf_tracker import format_shares
 
-    items_html = ""
+    # 建立 DataFrame
+    rows = []
     for i, h in enumerate(holdings[:15], 1):
         price_str = f"${h.price:.2f}" if h.price else "—"
-        items_html += f"""
-        <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-            <td style="padding: 10px 8px; color: rgba(255,255,255,0.5);">{i}</td>
-            <td style="padding: 10px 8px; font-weight: 600;">{h.code}</td>
-            <td style="padding: 10px 8px;">{h.name}</td>
-            <td style="padding: 10px 8px; text-align: right; color: #55efc4; font-family: 'JetBrains Mono', monospace;">{h.weight:.2f}%</td>
-            <td style="padding: 10px 8px; text-align: right; font-family: 'JetBrains Mono', monospace;">{format_shares(h.shares)}</td>
-            <td style="padding: 10px 8px; text-align: right; color: #74b9ff;">{price_str}</td>
-        </tr>
-        """
+        rows.append({
+            "#": i,
+            "代碼": h.code,
+            "名稱": h.name,
+            "權重(%)": f"{h.weight:.2f}",
+            "股數": format_shares(h.shares),
+            "現價": price_str
+        })
 
-    st.markdown(f"""
-    <div class="strategy-box slide-in">
-        <div class="strategy-title">🏆 Top 15 持股</div>
-        <table style="width: 100%; border-collapse: collapse; margin-top: 12px;">
-            <thead>
-                <tr style="border-bottom: 2px solid rgba(255,255,255,0.1);">
-                    <th style="padding: 8px; text-align: left; color: rgba(255,255,255,0.6); font-size: 12px;">#</th>
-                    <th style="padding: 8px; text-align: left; color: rgba(255,255,255,0.6); font-size: 12px;">代碼</th>
-                    <th style="padding: 8px; text-align: left; color: rgba(255,255,255,0.6); font-size: 12px;">名稱</th>
-                    <th style="padding: 8px; text-align: right; color: rgba(255,255,255,0.6); font-size: 12px;">權重</th>
-                    <th style="padding: 8px; text-align: right; color: rgba(255,255,255,0.6); font-size: 12px;">股數</th>
-                    <th style="padding: 8px; text-align: right; color: rgba(255,255,255,0.6); font-size: 12px;">現價</th>
-                </tr>
-            </thead>
-            <tbody>
-                {items_html}
-            </tbody>
-        </table>
-    </div>
-    """, unsafe_allow_html=True)
+    df = pd.DataFrame(rows)
+    st.dataframe(df, hide_index=True, use_container_width=True)
 
 
 def render_holding_change_summary(result):
     """渲染持股變動統計"""
-    st.markdown(f"""
-    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px;">
-        <div class="metric-card slide-in" style="border-left-color: #00b894; min-height: 80px;">
-            <div class="metric-label">新建倉</div>
-            <div class="metric-value" style="font-size: 32px; color: #00b894;">{len(result.new_positions)}</div>
-        </div>
-        <div class="metric-card slide-in" style="border-left-color: #55efc4; min-height: 80px;">
-            <div class="metric-label">加碼</div>
-            <div class="metric-value" style="font-size: 32px; color: #55efc4;">{len(result.increased)}</div>
-        </div>
-        <div class="metric-card slide-in" style="border-left-color: #fdcb6e; min-height: 80px;">
-            <div class="metric-label">減碼</div>
-            <div class="metric-value" style="font-size: 32px; color: #fdcb6e;">{len(result.decreased)}</div>
-        </div>
-        <div class="metric-card slide-in" style="border-left-color: #ff7675; min-height: 80px;">
-            <div class="metric-label">出清</div>
-            <div class="metric-value" style="font-size: 32px; color: #ff7675;">{len(result.exited)}</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(label="🌟 新建倉", value=len(result.new_positions))
+    with col2:
+        st.metric(label="📈 加碼", value=len(result.increased))
+    with col3:
+        st.metric(label="📉 減碼", value=len(result.decreased))
+    with col4:
+        st.metric(label="🚫 出清", value=len(result.exited))
