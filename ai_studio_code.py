@@ -43,6 +43,30 @@ from ui_components import (
     render_weight_strategy_box,
     render_alpha_short_position,
     get_column_config,
+    render_etf_rotation_strategy_box,
+    render_risk_management_strategy_box,
+    render_dividend_alert,
+    render_rotation_signal_card,
+    render_stop_loss_result,
+    render_position_size_result,
+    render_kelly_result,
+    render_allocation_chart,
+)
+from etf_rotation import (
+    THEME_ETFS,
+    ETF_CATEGORIES,
+    fetch_etf_performance,
+    calculate_rotation_signals,
+    get_upcoming_dividends,
+    build_etf_comparison_df,
+)
+from risk_management import (
+    RiskLevel,
+    RISK_PARAMS,
+    calculate_stop_loss,
+    calculate_position_size,
+    calculate_kelly_criterion,
+    get_allocation_suggestion,
 )
 
 
@@ -146,12 +170,14 @@ def main():
         st.caption(f"最後更新: {datetime.now().strftime('%H:%M')}")
 
     # 分頁
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "🇹🇼 0050 權值",
         "🌍 MSCI 外資",
         "💰 0056 高股息",
         "📊 全市場權重",
-        "⚡ 電子 Alpha 對沖"
+        "⚡ Alpha 對沖",
+        "🔄 ETF 輪動",
+        "🛡️ 風險管理"
     ])
 
     column_cfg = get_column_config()
@@ -336,6 +362,300 @@ def main():
 
             with st.expander("查看產業分類 (Debug)"):
                 st.dataframe(alpha_result.debug_df, hide_index=True)
+
+    # ==========================================================================
+    # Tab 6: ETF 輪動
+    # ==========================================================================
+    with tab6:
+        render_etf_rotation_strategy_box()
+
+        # 配息提醒
+        upcoming_dividends = get_upcoming_dividends()
+        render_dividend_alert(upcoming_dividends)
+
+        # 選擇 ETF 類別
+        category = st.selectbox(
+            "選擇 ETF 類別",
+            options=list(ETF_CATEGORIES.keys()),
+            index=0
+        )
+
+        # 選擇績效區間
+        period = st.radio(
+            "績效區間",
+            ["1mo", "3mo", "6mo", "1y"],
+            horizontal=True,
+            index=1,
+            format_func=lambda x: {"1mo": "1個月", "3mo": "3個月", "6mo": "6個月", "1y": "1年"}[x]
+        )
+
+        # 獲取績效數據
+        with st.spinner("載入 ETF 績效數據..."):
+            all_codes = [etf.code for etf in THEME_ETFS]
+            performance = fetch_etf_performance(all_codes, period)
+
+        # 計算輪動信號
+        signals = calculate_rotation_signals(performance, category)
+
+        # 信號統計
+        col_s1, col_s2, col_s3 = st.columns(3)
+        strong_count = len([s for s in signals if s.signal == "強勢"])
+        watch_count = len([s for s in signals if s.signal == "觀望"])
+        weak_count = len([s for s in signals if s.signal == "弱勢"])
+
+        with col_s1:
+            render_rotation_signal_card("強勢", strong_count, "#55efc4")
+        with col_s2:
+            render_rotation_signal_card("觀望", watch_count, "#ffeaa7")
+        with col_s3:
+            render_rotation_signal_card("弱勢", weak_count, "#ff7675")
+
+        st.divider()
+
+        # 輪動信號表
+        st.subheader(f"📊 {category} ETF 輪動信號")
+
+        for signal in signals:
+            if signal.signal == "強勢":
+                icon, color = "🟢", "#55efc4"
+            elif signal.signal == "觀望":
+                icon, color = "🟡", "#ffeaa7"
+            else:
+                icon, color = "🔴", "#ff7675"
+
+            perf = performance.get(signal.code, {})
+
+            col_info, col_perf = st.columns([1, 2])
+
+            with col_info:
+                st.markdown(f"""
+                <div style="padding: 12px; background: rgba(0,0,0,0.2); border-radius: 8px; border-left: 4px solid {color};">
+                    <div style="font-size: 18px; font-weight: 600;">{icon} {signal.code} {signal.name}</div>
+                    <div style="color: rgba(255,255,255,0.6); font-size: 13px; margin-top: 4px;">{signal.reason}</div>
+                    <div style="color: {color}; font-size: 14px; font-weight: 600; margin-top: 4px;">評分: {signal.score}/100</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with col_perf:
+                st.markdown(f"""
+                <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; text-align: center;">
+                    <div style="padding: 8px; background: rgba(0,0,0,0.15); border-radius: 6px;">
+                        <div style="color: rgba(255,255,255,0.5); font-size: 10px;">現價</div>
+                        <div style="color: #fff; font-weight: 600;">{perf.get('現價', '-')}</div>
+                    </div>
+                    <div style="padding: 8px; background: rgba(0,0,0,0.15); border-radius: 6px;">
+                        <div style="color: rgba(255,255,255,0.5); font-size: 10px;">報酬率</div>
+                        <div style="color: {'#55efc4' if perf.get('raw_return', 0) > 0 else '#ff7675'}; font-weight: 600;">{perf.get('報酬率', '-')}%</div>
+                    </div>
+                    <div style="padding: 8px; background: rgba(0,0,0,0.15); border-radius: 6px;">
+                        <div style="color: rgba(255,255,255,0.5); font-size: 10px;">最大回撤</div>
+                        <div style="color: #ff7675; font-weight: 600;">{perf.get('最大回撤', '-')}%</div>
+                    </div>
+                    <div style="padding: 8px; background: rgba(0,0,0,0.15); border-radius: 6px;">
+                        <div style="color: rgba(255,255,255,0.5); font-size: 10px;">波動率</div>
+                        <div style="color: #74b9ff; font-weight: 600;">{perf.get('波動率', '-')}%</div>
+                    </div>
+                    <div style="padding: 8px; background: rgba(0,0,0,0.15); border-radius: 6px;">
+                        <div style="color: rgba(255,255,255,0.5); font-size: 10px;">距高點</div>
+                        <div style="color: #ffeaa7; font-weight: 600;">{perf.get('距高點', '-')}%</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.write("")
+
+        # ETF 比較表
+        with st.expander("📋 查看完整 ETF 比較表"):
+            category_codes = ETF_CATEGORIES.get(category, [])
+            df_compare = build_etf_comparison_df(category_codes, performance)
+            st.dataframe(df_compare, hide_index=True, column_config=column_cfg)
+
+    # ==========================================================================
+    # Tab 7: 風險管理
+    # ==========================================================================
+    with tab7:
+        render_risk_management_strategy_box()
+
+        # 風險等級選擇
+        risk_level_name = st.radio(
+            "選擇風險屬性",
+            ["保守型", "穩健型", "積極型"],
+            horizontal=True,
+            index=1
+        )
+
+        risk_level_map = {
+            "保守型": RiskLevel.CONSERVATIVE,
+            "穩健型": RiskLevel.MODERATE,
+            "積極型": RiskLevel.AGGRESSIVE
+        }
+        risk_level = risk_level_map[risk_level_name]
+        params = RISK_PARAMS[risk_level]
+
+        # 顯示風險參數
+        st.info(f"""
+        📋 **{risk_level_name}參數**:
+        單一部位上限 {params['max_single_position']*100:.0f}% |
+        停損 {params['stop_loss_pct']*100:.0f}% |
+        停利 {params['take_profit_pct']*100:.0f}% |
+        總曝險上限 {params['max_total_exposure']*100:.0f}%
+        """)
+
+        st.divider()
+
+        # 三個工具並列
+        tool_tab1, tool_tab2, tool_tab3 = st.tabs([
+            "🛑 停損停利計算",
+            "📐 部位大小計算",
+            "🎰 凱利公式"
+        ])
+
+        # 停損停利計算
+        with tool_tab1:
+            col_input1, col_result1 = st.columns([1, 2])
+
+            with col_input1:
+                st.markdown("#### 輸入參數")
+                entry_price = st.number_input(
+                    "進場價格",
+                    min_value=1.0,
+                    value=100.0,
+                    step=0.5,
+                    key="sl_entry"
+                )
+                position_size = st.number_input(
+                    "持股股數",
+                    min_value=1000,
+                    value=1000,
+                    step=1000,
+                    key="sl_size"
+                )
+                stop_loss_pct = st.slider(
+                    "停損幅度 (%)",
+                    1, 20,
+                    int(params['stop_loss_pct'] * 100),
+                    key="sl_pct"
+                ) / 100
+                take_profit_pct = st.slider(
+                    "停利幅度 (%)",
+                    5, 50,
+                    int(params['take_profit_pct'] * 100),
+                    key="tp_pct"
+                ) / 100
+
+            with col_result1:
+                st.markdown("#### 計算結果")
+                sl_result = calculate_stop_loss(
+                    entry_price, stop_loss_pct, take_profit_pct, position_size
+                )
+                render_stop_loss_result(sl_result)
+
+        # 部位大小計算
+        with tool_tab2:
+            col_input2, col_result2 = st.columns([1, 2])
+
+            with col_input2:
+                st.markdown("#### 輸入參數")
+                total_capital = st.number_input(
+                    "總資金",
+                    min_value=100000,
+                    value=1000000,
+                    step=100000,
+                    key="ps_capital"
+                )
+                ps_entry = st.number_input(
+                    "進場價格",
+                    min_value=1.0,
+                    value=100.0,
+                    step=0.5,
+                    key="ps_entry"
+                )
+                ps_stop = st.number_input(
+                    "停損價格",
+                    min_value=1.0,
+                    value=92.0,
+                    step=0.5,
+                    key="ps_stop"
+                )
+                risk_per_trade = st.slider(
+                    "每筆交易風險 (%)",
+                    1, 5, 2,
+                    key="ps_risk"
+                ) / 100
+
+            with col_result2:
+                st.markdown("#### 計算結果")
+                ps_result = calculate_position_size(
+                    total_capital,
+                    ps_entry,
+                    ps_stop,
+                    risk_per_trade,
+                    params['max_single_position']
+                )
+                render_position_size_result(ps_result)
+
+        # 凱利公式
+        with tool_tab3:
+            col_input3, col_result3 = st.columns([1, 2])
+
+            with col_input3:
+                st.markdown("#### 輸入參數")
+                win_rate = st.slider(
+                    "勝率 (%)",
+                    30, 80, 55,
+                    key="kelly_wr"
+                ) / 100
+                avg_win = st.number_input(
+                    "平均獲利金額",
+                    min_value=1000,
+                    value=15000,
+                    step=1000,
+                    key="kelly_win"
+                )
+                avg_loss = st.number_input(
+                    "平均虧損金額",
+                    min_value=1000,
+                    value=10000,
+                    step=1000,
+                    key="kelly_loss"
+                )
+                use_half = st.checkbox("使用半凱利 (更保守)", value=True, key="kelly_half")
+
+            with col_result3:
+                st.markdown("#### 計算結果")
+                kelly_result = calculate_kelly_criterion(
+                    win_rate, avg_win, avg_loss, use_half
+                )
+                render_kelly_result(kelly_result)
+
+        st.divider()
+
+        # 資產配置建議
+        st.subheader("📊 資產配置建議")
+
+        col_alloc_input, col_alloc_result = st.columns([1, 2])
+
+        with col_alloc_input:
+            alloc_capital = st.number_input(
+                "總投資資金",
+                min_value=100000,
+                value=1000000,
+                step=100000,
+                key="alloc_cap"
+            )
+            market_condition = st.radio(
+                "市場狀態",
+                ["bullish", "neutral", "bearish"],
+                horizontal=True,
+                index=1,
+                format_func=lambda x: {"bullish": "🐂 多頭", "neutral": "⚖️ 中性", "bearish": "🐻 空頭"}[x]
+            )
+
+        with col_alloc_result:
+            alloc_result = get_allocation_suggestion(
+                alloc_capital, risk_level, market_condition
+            )
+            render_allocation_chart(alloc_result)
 
 
 if __name__ == "__main__":

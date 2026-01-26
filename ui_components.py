@@ -740,3 +740,275 @@ def get_column_config():
         "raw_price": None,
         "in_0050": None,
     }
+
+
+# =============================================================================
+# ETF 輪動策略 UI
+# =============================================================================
+
+def render_etf_rotation_strategy_box():
+    """渲染 ETF 輪動策略說明"""
+    render_strategy_box(
+        "ETF 輪動策略 (動能追蹤)",
+        """
+        <table style="width:100%; border-collapse: collapse;">
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                <td style="padding: 8px 0; width: 80px;"><b>核心邏輯</b></td>
+                <td style="padding: 8px 0;">追蹤主題型 ETF 相對強弱，輪動配置資金</td>
+            </tr>
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                <td style="padding: 8px 0;"><b>強勢信號</b></td>
+                <td style="padding: 8px 0;"><span class="buy-signal">報酬率高 + 回撤小 + 接近高點</span></td>
+            </tr>
+            <tr style="border-bottom: 1px solid rgba(255,255,255,0.1);">
+                <td style="padding: 8px 0;"><b>弱勢信號</b></td>
+                <td style="padding: 8px 0;"><span class="sell-signal">報酬率低 + 回撤大 + 遠離高點</span></td>
+            </tr>
+            <tr>
+                <td style="padding: 8px 0;"><b>輪動週期</b></td>
+                <td style="padding: 8px 0;">每月檢視，季度調整</td>
+            </tr>
+        </table>
+        """,
+        "🔄"
+    )
+
+
+def render_rotation_signal_card(signal_type: str, count: int, color: str):
+    """渲染輪動信號統計卡片"""
+    st.markdown(f"""
+    <div class="metric-card slide-in" style="border-left-color: {color}; min-height: 80px;">
+        <div class="metric-label">{signal_type}</div>
+        <div class="metric-value" style="font-size: 36px; color: {color};">{count}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_dividend_alert(upcoming: list):
+    """渲染配息提醒"""
+    if not upcoming:
+        return
+
+    high_urgency = [d for d in upcoming if d.get("urgency") == "high"]
+    med_urgency = [d for d in upcoming if d.get("urgency") == "medium"]
+
+    content = ""
+    if high_urgency:
+        items = ", ".join([f"{d['code']} {d['name']}" for d in high_urgency[:3]])
+        content += f'<div style="color: #ff7675; margin-bottom: 8px;">🔴 本月配息: {items}</div>'
+
+    if med_urgency:
+        items = ", ".join([f"{d['code']} {d['name']}" for d in med_urgency[:3]])
+        content += f'<div style="color: #ffeaa7;">🟡 下月配息: {items}</div>'
+
+    st.markdown(f"""
+    <div class="strategy-box slide-in" style="border-left: 4px solid #f1c40f;">
+        <div class="strategy-title">📅 配息追蹤</div>
+        <div class="strategy-list">{content}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# =============================================================================
+# 風險管理工具 UI
+# =============================================================================
+
+def render_risk_management_strategy_box():
+    """渲染風險管理策略說明"""
+    render_strategy_box(
+        "風險管理工具箱",
+        """
+        <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 200px;">
+                <div style="color: #ff7675; font-weight: 600; margin-bottom: 8px;">🛑 停損停利</div>
+                <div>自動計算停損價、停利價、盈虧比</div>
+            </div>
+            <div style="flex: 1; min-width: 200px;">
+                <div style="color: #74b9ff; font-weight: 600; margin-bottom: 8px;">📐 部位計算</div>
+                <div>依據風險比例計算建議部位大小</div>
+            </div>
+            <div style="flex: 1; min-width: 200px;">
+                <div style="color: #55efc4; font-weight: 600; margin-bottom: 8px;">🎰 凱利公式</div>
+                <div>基於勝率和盈虧比的最佳部位</div>
+            </div>
+        </div>
+        """,
+        "🛡️"
+    )
+
+
+def render_stop_loss_result(result):
+    """渲染停損停利計算結果"""
+    rr_color = "#55efc4" if result.risk_reward_ratio >= 2 else "#ffeaa7" if result.risk_reward_ratio >= 1.5 else "#ff7675"
+
+    st.markdown(f"""
+    <div class="strategy-box slide-in">
+        <div class="strategy-title">📊 停損停利分析</div>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 12px;">
+            <div style="text-align: center; padding: 16px; background: rgba(255,118,117,0.1); border-radius: 12px;">
+                <div style="color: rgba(255,255,255,0.6); font-size: 12px; margin-bottom: 4px;">停損價</div>
+                <div style="color: #ff7675; font-size: 24px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">
+                    ${result.stop_loss_price:,.2f}
+                </div>
+                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">-{result.stop_loss_pct:.1f}%</div>
+            </div>
+            <div style="text-align: center; padding: 16px; background: rgba(116,185,255,0.1); border-radius: 12px;">
+                <div style="color: rgba(255,255,255,0.6); font-size: 12px; margin-bottom: 4px;">進場價</div>
+                <div style="color: #74b9ff; font-size: 24px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">
+                    ${result.entry_price:,.2f}
+                </div>
+                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">基準</div>
+            </div>
+            <div style="text-align: center; padding: 16px; background: rgba(85,239,196,0.1); border-radius: 12px;">
+                <div style="color: rgba(255,255,255,0.6); font-size: 12px; margin-bottom: 4px;">停利價</div>
+                <div style="color: #55efc4; font-size: 24px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">
+                    ${result.take_profit_price:,.2f}
+                </div>
+                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">+{result.take_profit_pct:.1f}%</div>
+            </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 16px;">
+            <div style="text-align: center;">
+                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">最大虧損</div>
+                <div style="color: #ff7675; font-size: 16px; font-weight: 600;">${result.max_loss_amount:,.0f}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">盈虧比</div>
+                <div style="color: {rr_color}; font-size: 16px; font-weight: 600;">1:{result.risk_reward_ratio}</div>
+            </div>
+            <div style="text-align: center;">
+                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">潛在獲利</div>
+                <div style="color: #55efc4; font-size: 16px; font-weight: 600;">${result.potential_profit:,.0f}</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_position_size_result(result):
+    """渲染部位計算結果"""
+    st.markdown(f"""
+    <div class="alpha-long slide-in">
+        <h4 style="color: #fff; margin-bottom: 16px;">📐 建議部位</h4>
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;">
+            <div>
+                <div style="color: rgba(255,255,255,0.6); font-size: 12px;">建議股數</div>
+                <div style="color: #55efc4; font-size: 28px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">
+                    {result.recommended_shares:,} 股
+                </div>
+            </div>
+            <div>
+                <div style="color: rgba(255,255,255,0.6); font-size: 12px;">建議金額</div>
+                <div style="color: #fff; font-size: 28px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">
+                    ${result.recommended_amount:,.0f}
+                </div>
+            </div>
+            <div>
+                <div style="color: rgba(255,255,255,0.6); font-size: 12px;">風險金額</div>
+                <div style="color: #ff7675; font-size: 18px; font-weight: 600;">${result.risk_amount:,.0f}</div>
+            </div>
+            <div>
+                <div style="color: rgba(255,255,255,0.6); font-size: 12px;">佔總資金</div>
+                <div style="color: #74b9ff; font-size: 18px; font-weight: 600;">{result.portfolio_pct:.1f}%</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if result.warning:
+        st.warning(result.warning)
+
+
+def render_kelly_result(result):
+    """渲染凱利公式結果"""
+    edge_color = "#55efc4" if result.edge > 0 else "#ff7675"
+
+    st.markdown(f"""
+    <div class="strategy-box slide-in">
+        <div class="strategy-title">🎰 凱利公式分析</div>
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 12px;">
+            <div style="text-align: center; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">凱利比例</div>
+                <div style="color: #ffeaa7; font-size: 20px; font-weight: 600;">{result.kelly_pct:.1f}%</div>
+            </div>
+            <div style="text-align: center; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">半凱利</div>
+                <div style="color: #74b9ff; font-size: 20px; font-weight: 600;">{result.half_kelly_pct:.1f}%</div>
+            </div>
+            <div style="text-align: center; padding: 12px; background: rgba(85,239,196,0.15); border-radius: 8px;">
+                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">建議比例</div>
+                <div style="color: #55efc4; font-size: 20px; font-weight: 600;">{result.recommended_pct:.1f}%</div>
+            </div>
+            <div style="text-align: center; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                <div style="color: rgba(255,255,255,0.5); font-size: 11px;">期望值</div>
+                <div style="color: {edge_color}; font-size: 20px; font-weight: 600;">{result.edge:+.2f}</div>
+            </div>
+        </div>
+        <div style="margin-top: 12px; padding: 12px; background: rgba(0,0,0,0.15); border-radius: 8px; text-align: center;">
+            <span style="color: rgba(255,255,255,0.7);">💡 {result.description}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_allocation_chart(result):
+    """渲染資產配置建議"""
+    colors = ["#55efc4", "#74b9ff", "#ffeaa7", "#ff7675", "#a29bfe"]
+
+    items_html = ""
+    for i, item in enumerate(result.items):
+        color = colors[i % len(colors)]
+        amount = result.total_capital * (item.target_pct / 100)
+        items_html += f"""
+        <div style="display: flex; align-items: center; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.05);">
+            <div style="width: 8px; height: 8px; background: {color}; border-radius: 50%; margin-right: 12px;"></div>
+            <div style="flex: 1;">
+                <div style="color: #fff; font-weight: 500;">{item.category}</div>
+                <div style="color: rgba(255,255,255,0.5); font-size: 12px;">{item.description}</div>
+            </div>
+            <div style="text-align: right;">
+                <div style="color: {color}; font-weight: 600; font-family: 'JetBrains Mono', monospace;">{item.target_pct:.0f}%</div>
+                <div style="color: rgba(255,255,255,0.5); font-size: 12px;">${amount:,.0f}</div>
+            </div>
+        </div>
+        """
+
+    st.markdown(f"""
+    <div class="strategy-box slide-in">
+        <div class="strategy-title">📊 {result.risk_level} 配置建議</div>
+        <div style="margin-top: 8px;">
+            {items_html}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_risk_check_result(result):
+    """渲染風險檢查結果"""
+    status_class = "status-success" if result.passed else "status-danger"
+    status_text = "通過" if result.passed else "警告"
+
+    warnings_html = ""
+    if result.warnings:
+        warnings_html = "<div style='margin-top: 12px;'>"
+        for w in result.warnings:
+            warnings_html += f"<div style='color: #ff7675; padding: 4px 0;'>⚠️ {w}</div>"
+        warnings_html += "</div>"
+
+    suggestions_html = ""
+    if result.suggestions:
+        suggestions_html = "<div style='margin-top: 12px;'>"
+        for s in result.suggestions:
+            suggestions_html += f"<div style='color: rgba(255,255,255,0.7); padding: 4px 0;'>💡 {s}</div>"
+        suggestions_html += "</div>"
+
+    st.markdown(f"""
+    <div class="strategy-box slide-in">
+        <div class="strategy-title">
+            🔍 風險檢查
+            <span class="{status_class}" style="margin-left: 12px;">{status_text}</span>
+        </div>
+        {warnings_html}
+        {suggestions_html}
+    </div>
+    """, unsafe_allow_html=True)
