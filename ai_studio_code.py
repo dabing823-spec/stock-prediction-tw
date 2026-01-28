@@ -57,6 +57,9 @@ from ui_components import (
     render_position_change_card,
     render_top_holdings_table,
     render_holding_change_summary,
+    render_cash_level_analysis,
+    render_holding_period_analysis,
+    render_weight_signals,
 )
 from etf_rotation import (
     THEME_ETFS,
@@ -83,6 +86,14 @@ from active_etf_tracker import (
     format_pct,
     get_available_dates,
     load_holdings_from_drive,
+)
+from etf_analytics import (
+    load_historical_data,
+    analyze_cash_levels,
+    analyze_holding_periods,
+    get_holding_statistics,
+    analyze_weight_signals,
+    get_conviction_summary,
 )
 
 
@@ -263,16 +274,16 @@ def main():
 
         st.caption(f"最後更新: {datetime.now().strftime('%H:%M')}")
 
-    # 分頁
+    # 分頁 (標籤已縮短以優化手機顯示)
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "🇹🇼 0050 權值",
-        "🌍 MSCI 外資",
-        "💰 0056 高股息",
-        "📊 全市場權重",
-        "⚡ Alpha 對沖",
-        "🔄 ETF 輪動",
-        "🛡️ 風險管理",
-        "🎯 主動型 ETF"
+        "🇹🇼 0050",
+        "🌍 MSCI",
+        "💰 高股息",
+        "📊 權重",
+        "⚡ Alpha",
+        "🔄 輪動",
+        "🛡️ 風控",
+        "🎯 主動ETF"
     ])
 
     column_cfg = get_column_config()
@@ -358,26 +369,76 @@ def main():
 
         hy_result = analyze_0056_strategy(df_mcap, holdings)
 
-        with st.spinner("計算殖利率排行中..."):
-            df_enriched = enrich_with_dividend_yield(hy_result.df, hy_result.codes)
-            df_enriched = enrich_dataframe(df_enriched, hy_result.codes)
+        # 初始化 session_state
+        if "tab3_dividend_loaded" not in st.session_state:
+            st.session_state.tab3_dividend_loaded = False
+            st.session_state.tab3_df_enriched = None
 
-        # 篩選模式
-        sort_method = st.radio(
-            "🔍 掃描模式：",
-            ["💰 殖利率排行 (抓高息)", "🔥 量能爆發 (抓偷跑)", "💎 尚未入選 (抓遺珠)"],
-            horizontal=True
-        )
+        # 手動觸發殖利率載入
+        col_btn, col_info = st.columns([1, 3])
+        with col_btn:
+            load_dividend = st.button(
+                "💰 載入殖利率排行",
+                type="primary",
+                use_container_width=True,
+                disabled=st.session_state.tab3_dividend_loaded
+            )
+        with col_info:
+            if st.session_state.tab3_dividend_loaded:
+                st.success("✅ 殖利率資料已載入")
+            else:
+                st.info("⏱️ 載入殖利率約需 5-10 秒 (150 檔股票並行查詢)")
 
-        if "殖利率" in sort_method:
-            df_show = filter_high_yield_stocks(df_enriched, "yield")
-        elif "量能" in sort_method:
-            df_show = filter_high_yield_stocks(df_enriched, "volume")
+        # 載入殖利率資料
+        if load_dividend and not st.session_state.tab3_dividend_loaded:
+            with st.spinner("計算殖利率排行中... (並行查詢 150 檔)"):
+                df_enriched = enrich_with_dividend_yield(hy_result.df, hy_result.codes)
+                df_enriched = enrich_dataframe(df_enriched, hy_result.codes)
+                st.session_state.tab3_df_enriched = df_enriched
+                st.session_state.tab3_dividend_loaded = True
+                st.rerun()
+
+        # 使用快取的資料或基本資料
+        if st.session_state.tab3_dividend_loaded and st.session_state.tab3_df_enriched is not None:
+            df_enriched = st.session_state.tab3_df_enriched
+
+            # 篩選模式 (含殖利率)
+            sort_method = st.radio(
+                "🔍 掃描模式：",
+                ["💰 殖利率排行 (抓高息)", "🔥 量能爆發 (抓偷跑)", "💎 尚未入選 (抓遺珠)"],
+                horizontal=True,
+                key="tab3_sort_with_yield"
+            )
+
+            if "殖利率" in sort_method:
+                df_show = filter_high_yield_stocks(df_enriched, "yield")
+            elif "量能" in sort_method:
+                df_show = filter_high_yield_stocks(df_enriched, "volume")
+            else:
+                df_show = filter_high_yield_stocks(df_enriched, "not_selected")
+
+            hy_columns = ["排名", "連結代碼", "股票名稱", "殖利率(%)", "已入選 ETF",
+                          "現價", "成交值", "漲跌幅", "成交量"]
+
         else:
-            df_show = filter_high_yield_stocks(df_enriched, "not_selected")
+            # 未載入殖利率時，只顯示基本資料
+            df_basic = enrich_dataframe(hy_result.df, hy_result.codes)
 
-        hy_columns = ["排名", "連結代碼", "股票名稱", "殖利率(%)", "已入選 ETF",
-                      "現價", "成交值", "漲跌幅", "成交量"]
+            # 篩選模式 (無殖利率)
+            sort_method = st.radio(
+                "🔍 掃描模式：",
+                ["🔥 量能爆發 (抓偷跑)", "💎 尚未入選 (抓遺珠)"],
+                horizontal=True,
+                key="tab3_sort_no_yield"
+            )
+
+            if "量能" in sort_method:
+                df_show = filter_high_yield_stocks(df_basic, "volume")
+            else:
+                df_show = filter_high_yield_stocks(df_basic, "not_selected")
+
+            hy_columns = ["排名", "連結代碼", "股票名稱", "已入選 ETF",
+                          "現價", "成交值", "漲跌幅", "成交量"]
 
         st.dataframe(
             df_show[hy_columns],
@@ -826,7 +887,12 @@ def main():
                     date_info_old = date_options[selected_old]
 
                 # 選項
-                fetch_prices = st.checkbox("取得即時股價 (較慢但可計算金額)", value=False, key="drive_fetch_prices")
+                fetch_prices = st.checkbox(
+                    "取得即時股價 (可計算金額，約需 30-60 秒)",
+                    value=False,
+                    key="drive_fetch_prices",
+                    help="勾選後將查詢所有持股即時價格，以計算金額變化。不勾選則只顯示股數變化。"
+                )
 
                 # 開始分析
                 if st.button("🚀 開始比較分析", type="primary", use_container_width=True):
@@ -895,7 +961,12 @@ def main():
             if file_new and file_old:
                 try:
                     # 比較持股
-                    fetch_prices = st.checkbox("取得即時股價 (較慢)", value=False, key="fetch_prices")
+                    fetch_prices = st.checkbox(
+                        "取得即時股價 (約需 30-60 秒)",
+                        value=False,
+                        key="fetch_prices",
+                        help="勾選後將查詢所有持股即時價格，以計算金額變化。"
+                    )
 
                     if st.button("🔍 開始比較分析", type="primary", use_container_width=True):
                         with st.spinner("解析持股資料中..."):
@@ -951,6 +1022,82 @@ def main():
             - **📈 大幅加碼**: 經理人持續看好，可考慮跟進
             - **📉 減碼/🚫 出清**: ETF 正在退出的標的，宜避開
             """)
+
+        # ==========================================================================
+        # 進階分析區塊
+        # ==========================================================================
+        st.divider()
+        st.subheader("📈 進階分析 (多期歷史)")
+
+        if not etf_info.get("drive_folder"):
+            st.warning("⚠️ 進階分析需要 Google Drive 資料夾設定，此 ETF 尚未支援")
+        else:
+            st.markdown("""
+            載入多期歷史資料，分析經理人操作行為：
+            - 💵 **現金水位監控** - 追蹤現金配置變化，判斷經理人對市場看法
+            - ⏱️ **持股週期分析** - 了解持股習慣，核心持股 vs 短線操作
+            - 📊 **部位權重訊號** - 找出高信心標的，追蹤權重變化趨勢
+            """)
+
+            col_analytics1, col_analytics2 = st.columns([1, 3])
+
+            with col_analytics1:
+                num_periods = st.slider(
+                    "分析期數",
+                    min_value=3,
+                    max_value=20,
+                    value=10,
+                    step=1,
+                    key="analytics_periods",
+                    help="載入越多期資料分析越準確，但速度較慢"
+                )
+
+            with col_analytics2:
+                run_analytics = st.button(
+                    "🚀 開始進階分析",
+                    type="primary",
+                    use_container_width=True,
+                    key="run_analytics_btn"
+                )
+
+            if run_analytics:
+                try:
+                    # 載入歷史資料
+                    with st.spinner(f"正在載入 {num_periods} 期歷史資料..."):
+                        historical_data = load_historical_data(selected_etf, num_periods)
+
+                    if not historical_data.get("dates"):
+                        st.error("❌ 無法載入歷史資料")
+                    else:
+                        dates = historical_data.get("dates", [])
+                        st.success(f"✅ 已載入 {len(dates)} 期資料 ({dates[0]} ~ {dates[-1]})")
+
+                        # 使用分頁顯示三種分析
+                        analytics_tab1, analytics_tab2, analytics_tab3 = st.tabs([
+                            "💵 現金水位",
+                            "⏱️ 持股週期",
+                            "📊 權重訊號"
+                        ])
+
+                        with analytics_tab1:
+                            cash_analysis = analyze_cash_levels(historical_data)
+                            render_cash_level_analysis(cash_analysis)
+
+                        with analytics_tab2:
+                            holding_histories = analyze_holding_periods(historical_data)
+                            holding_stats = get_holding_statistics(holding_histories)
+                            render_holding_period_analysis(holding_stats, holding_histories)
+
+                        with analytics_tab3:
+                            weight_signals = analyze_weight_signals(historical_data)
+                            conviction_summary = get_conviction_summary(weight_signals)
+                            render_weight_signals(weight_signals, conviction_summary)
+
+                except Exception as e:
+                    st.error(f"❌ 分析錯誤: {str(e)}")
+                    import traceback
+                    with st.expander("錯誤詳情"):
+                        st.code(traceback.format_exc())
 
 
 if __name__ == "__main__":

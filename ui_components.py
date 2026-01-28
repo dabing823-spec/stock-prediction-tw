@@ -16,6 +16,71 @@ def inject_custom_css():
     """注入自定義 CSS 樣式 - 現代化設計"""
     st.markdown("""
     <style>
+        /* ===== CSS 變數系統 ===== */
+        :root {
+            /* 色彩系統 */
+            --color-success: #55efc4;
+            --color-success-light: rgba(85, 239, 196, 0.2);
+            --color-danger: #ff7675;
+            --color-danger-light: rgba(255, 118, 117, 0.2);
+            --color-warning: #ffeaa7;
+            --color-warning-light: rgba(255, 234, 167, 0.2);
+            --color-info: #74b9ff;
+            --color-info-light: rgba(116, 185, 255, 0.2);
+            --color-neutral: #b2bec3;
+            --color-neutral-light: rgba(178, 190, 195, 0.2);
+            --color-primary: #667eea;
+            --color-primary-dark: #764ba2;
+            --color-accent: #f1c40f;
+
+            /* 背景色 */
+            --bg-card: rgba(38, 39, 48, 0.9);
+            --bg-card-dark: rgba(30, 35, 41, 0.95);
+            --bg-overlay: rgba(0, 0, 0, 0.2);
+            --bg-sidebar: linear-gradient(180deg, #1a1d24 0%, #0d1117 100%);
+
+            /* 邊框 */
+            --border-subtle: rgba(255, 255, 255, 0.08);
+            --border-light: rgba(255, 255, 255, 0.1);
+            --border-medium: rgba(255, 255, 255, 0.15);
+
+            /* 間距系統 */
+            --spacing-xs: 4px;
+            --spacing-sm: 8px;
+            --spacing-md: 12px;
+            --spacing-lg: 16px;
+            --spacing-xl: 20px;
+            --spacing-xxl: 24px;
+
+            /* 字型大小 */
+            --font-xs: 10px;
+            --font-sm: 12px;
+            --font-md: 14px;
+            --font-lg: 16px;
+            --font-xl: 18px;
+            --font-xxl: 24px;
+            --font-xxxl: 28px;
+
+            /* 圓角 */
+            --radius-sm: 6px;
+            --radius-md: 8px;
+            --radius-lg: 12px;
+            --radius-xl: 16px;
+            --radius-full: 20px;
+
+            /* 陰影系統 */
+            --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.15);
+            --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.2);
+            --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.3);
+            --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+            --shadow-hover: 0 8px 32px rgba(0, 0, 0, 0.4);
+
+            /* 動畫時間 */
+            --transition-fast: 0.2s ease;
+            --transition-normal: 0.3s ease;
+            --transition-slow: 0.4s ease-out;
+        }
+
         /* ===== 全局樣式 ===== */
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -360,30 +425,236 @@ def inject_custom_css():
         }
 
         /* ===== 響應式設計 ===== */
-        @media (max-width: 768px) {
+
+        /* 平板 (768px - 1024px) */
+        @media (min-width: 768px) and (max-width: 1024px) {
             .metric-card {
-                min-height: 100px;
-                padding: 12px 8px;
+                min-height: 110px;
+                padding: 14px 10px;
             }
 
             .metric-value {
-                font-size: 22px;
+                font-size: 24px;
             }
 
             .metric-label {
-                font-size: 10px;
+                font-size: 11px;
             }
 
             .strategy-box {
-                padding: 16px;
+                padding: 18px 20px;
+                margin-bottom: 20px;
             }
 
             .strategy-title {
-                font-size: 15px;
+                font-size: 16px;
             }
 
             .strategy-list {
                 font-size: 13px;
+                line-height: 1.7;
+            }
+
+            /* Tab 標籤在平板上可橫向捲動 */
+            .stTabs [data-baseweb="tab-list"] {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: thin;
+            }
+
+            .stTabs [data-baseweb="tab"] {
+                padding: 10px 16px;
+                font-size: 13px;
+                white-space: nowrap;
+            }
+        }
+
+        /* 大手機 (480px - 768px) */
+        @media (min-width: 480px) and (max-width: 767px) {
+            .metric-card {
+                min-height: 95px;
+                padding: 12px 8px;
+            }
+
+            .metric-value {
+                font-size: 20px;
+            }
+
+            .metric-label {
+                font-size: 10px;
+                letter-spacing: 0.2px;
+            }
+
+            .metric-sub {
+                font-size: 11px;
+                padding: 3px 8px;
+            }
+
+            .metric-delta {
+                font-size: 12px;
+            }
+
+            .strategy-box {
+                padding: 14px 16px;
+                margin-bottom: 16px;
+                border-radius: 12px;
+            }
+
+            .strategy-title {
+                font-size: 14px;
+                margin-bottom: 10px;
+            }
+
+            .strategy-list {
+                font-size: 12px;
+                line-height: 1.6;
+            }
+
+            /* Tab 標籤橫向捲動 */
+            .stTabs [data-baseweb="tab-list"] {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+                gap: 4px;
+                padding: 6px;
+            }
+
+            .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar {
+                display: none;
+            }
+
+            .stTabs [data-baseweb="tab"] {
+                padding: 8px 12px;
+                font-size: 12px;
+                white-space: nowrap;
+                flex-shrink: 0;
+            }
+
+            /* Alpha 對沖卡片 */
+            .alpha-long, .alpha-short {
+                padding: 14px;
+            }
+        }
+
+        /* 小手機 (< 480px) */
+        @media (max-width: 479px) {
+            .metric-card {
+                min-height: 85px;
+                padding: 10px 6px;
+                border-radius: 10px;
+                margin-bottom: 8px;
+            }
+
+            .metric-value {
+                font-size: 18px;
+            }
+
+            .metric-label {
+                font-size: 9px;
+                letter-spacing: 0.1px;
+                margin-bottom: 4px;
+            }
+
+            .metric-sub {
+                font-size: 10px;
+                padding: 2px 6px;
+                margin-top: 4px;
+            }
+
+            .metric-delta {
+                font-size: 11px;
+            }
+
+            .strategy-box {
+                padding: 12px 14px;
+                margin-bottom: 12px;
+                border-radius: 10px;
+            }
+
+            .strategy-box::after {
+                left: 14px;
+                right: 14px;
+            }
+
+            .strategy-title {
+                font-size: 13px;
+                margin-bottom: 8px;
+                gap: 6px;
+            }
+
+            .strategy-list {
+                font-size: 11px;
+                line-height: 1.5;
+            }
+
+            .strategy-list table {
+                font-size: 11px;
+            }
+
+            .strategy-list table td {
+                padding: 6px 0 !important;
+            }
+
+            /* Tab 標籤 - 小螢幕優化 */
+            .stTabs [data-baseweb="tab-list"] {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+                gap: 2px;
+                padding: 4px;
+                border-radius: 8px;
+            }
+
+            .stTabs [data-baseweb="tab-list"]::-webkit-scrollbar {
+                display: none;
+            }
+
+            .stTabs [data-baseweb="tab"] {
+                padding: 6px 10px;
+                font-size: 11px;
+                border-radius: 6px;
+                white-space: nowrap;
+                flex-shrink: 0;
+            }
+
+            /* Alpha 對沖卡片 */
+            .alpha-long, .alpha-short {
+                padding: 12px;
+                border-radius: 10px;
+            }
+
+            .alpha-short h4 {
+                font-size: 14px;
+            }
+
+            .alpha-short li {
+                font-size: 12px;
+                padding: 6px 0;
+            }
+
+            /* 狀態指示器 */
+            .status-badge {
+                padding: 4px 10px;
+                font-size: 10px;
+            }
+
+            /* 按鈕優化 */
+            .stButton > button {
+                padding: 10px 16px;
+                font-size: 12px;
+                border-radius: 8px;
+            }
+
+            /* 輸入框優化 */
+            .stNumberInput > div > div > input,
+            .stTextInput > div > div > input {
+                font-size: 14px !important;
+                padding: 8px 10px !important;
+            }
+
+            /* 分隔線 */
+            hr {
+                margin: 16px 0;
             }
         }
     </style>
@@ -1197,3 +1468,215 @@ def render_holding_change_summary(result):
         st.metric(label="📉 減碼", value=len(result.decreased))
     with col4:
         st.metric(label="🚫 出清", value=len(result.exited))
+
+
+# =============================================================================
+# ETF 進階分析 UI
+# =============================================================================
+
+def render_cash_level_analysis(cash_analysis: dict):
+    """渲染現金水位分析"""
+    import pandas as pd
+
+    st.subheader("💵 現金水位監控")
+
+    records = cash_analysis.get("records", [])
+    if not records:
+        st.warning("無現金水位資料")
+        return
+
+    # 統計指標
+    col1, col2, col3, col4 = st.columns(4)
+
+    current = cash_analysis.get("current", 0)
+    previous = cash_analysis.get("previous", 0)
+    average = cash_analysis.get("average", 0)
+    trend = cash_analysis.get("trend", "unknown")
+
+    trend_icon = "📈" if trend == "increasing" else "📉" if trend == "decreasing" else "➡️"
+    trend_text = "上升中" if trend == "increasing" else "下降中" if trend == "decreasing" else "持平"
+
+    with col1:
+        st.metric("當前現金水位", f"{current:.2f}%", delta=f"{current - previous:.2f}%")
+    with col2:
+        st.metric("前期現金水位", f"{previous:.2f}%")
+    with col3:
+        st.metric("平均現金水位", f"{average:.2f}%")
+    with col4:
+        st.metric("趨勢", f"{trend_icon} {trend_text}")
+
+    # 警示
+    alert = cash_analysis.get("alert")
+    if alert:
+        if alert["level"] == "warning":
+            st.warning(f"⚠️ {alert['message']}")
+        else:
+            st.info(f"ℹ️ {alert['message']}")
+
+    # 歷史趨勢圖
+    if len(records) > 1:
+        df = pd.DataFrame([
+            {
+                "日期": r.date[:4] + "/" + r.date[4:6] + "/" + r.date[6:8],
+                "現金權重(%)": r.cash_weight,
+                "NAV": r.nav or 0
+            }
+            for r in records
+        ])
+
+        st.line_chart(df.set_index("日期")["現金權重(%)"])
+
+
+def render_holding_period_analysis(holding_stats: dict, holding_histories: list):
+    """渲染持股週期分析"""
+    import pandas as pd
+
+    st.subheader("⏱️ 持股週期分析")
+
+    if not holding_stats:
+        st.warning("無持股週期資料")
+        return
+
+    # 統計指標
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("持有標的數", holding_stats.get("active_stocks", 0))
+    with col2:
+        st.metric("已退出標的", holding_stats.get("exited_stocks", 0))
+    with col3:
+        avg_days = holding_stats.get("avg_holding_days", 0)
+        st.metric("平均持有天數", f"{avg_days:.0f} 天")
+    with col4:
+        avg_exit = holding_stats.get("avg_exited_days", 0)
+        st.metric("退出標的平均持有", f"{avg_exit:.0f} 天")
+
+    # 權重分佈
+    st.markdown("##### 📊 持股權重分佈")
+    weight_buckets = holding_stats.get("weight_buckets", {})
+    cols = st.columns(len(weight_buckets))
+    for i, (bucket, count) in enumerate(weight_buckets.items()):
+        with cols[i]:
+            st.metric(bucket, count)
+
+    # 趨勢分佈
+    st.markdown("##### 📈 權重趨勢分佈")
+    trend_dist = holding_stats.get("trend_distribution", {})
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("📈 權重上升", trend_dist.get("increasing", 0))
+    with col2:
+        st.metric("➡️ 權重持平", trend_dist.get("stable", 0))
+    with col3:
+        st.metric("📉 權重下降", trend_dist.get("decreasing", 0))
+
+    # 核心持股列表
+    if holding_histories:
+        st.markdown("##### 🏆 核心持股 (權重 > 2%)")
+        core_holdings = [h for h in holding_histories if h.current_weight > 2 and h.is_active]
+
+        if core_holdings:
+            df = pd.DataFrame([
+                {
+                    "代碼": h.code,
+                    "名稱": h.name,
+                    "當前權重(%)": f"{h.current_weight:.2f}",
+                    "最高權重(%)": f"{h.max_weight:.2f}",
+                    "持有天數": h.holding_days,
+                    "趨勢": "📈" if h.weight_trend == "increasing" else "📉" if h.weight_trend == "decreasing" else "➡️"
+                }
+                for h in core_holdings[:15]
+            ])
+            st.dataframe(df, hide_index=True, use_container_width=True)
+        else:
+            st.info("目前無權重 > 2% 的核心持股")
+
+
+def render_weight_signals(weight_signals: list, conviction_summary: dict):
+    """渲染權重訊號分析"""
+    import pandas as pd
+
+    st.subheader("📊 部位權重訊號")
+
+    if not weight_signals:
+        st.warning("無權重訊號資料")
+        return
+
+    # 信心度統計
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("🔥 高信心標的", conviction_summary.get("high_conviction", 0))
+    with col2:
+        st.metric("⚖️ 中等信心", conviction_summary.get("medium_conviction", 0))
+    with col3:
+        st.metric("❄️ 低信心標的", conviction_summary.get("low_conviction", 0))
+
+    # 訊號分類
+    st.markdown("##### 📡 訊號統計")
+    signal_counts = conviction_summary.get("signal_counts", {})
+    if signal_counts:
+        cols = st.columns(min(len(signal_counts), 5))
+        for i, (signal, count) in enumerate(signal_counts.items()):
+            with cols[i % len(cols)]:
+                st.metric(signal, count)
+
+    # 高信心加碼
+    st.markdown("##### 🔥 高信心加碼 (重點追蹤)")
+    top_increases = conviction_summary.get("top_increases", [])
+    high_conviction = [s for s in top_increases if s.conviction_level == "高"]
+
+    if high_conviction:
+        df = pd.DataFrame([
+            {
+                "代碼": s.code,
+                "名稱": s.name,
+                "當前權重(%)": f"{s.current_weight:.2f}",
+                "權重變化": f"+{s.weight_change:.2f}%" if s.weight_change > 0 else f"{s.weight_change:.2f}%",
+                "排名變化": f"+{s.rank_change}" if s.rank_change > 0 else str(s.rank_change),
+                "訊號": s.signal
+            }
+            for s in high_conviction[:10]
+        ])
+        st.dataframe(df, hide_index=True, use_container_width=True)
+    else:
+        st.info("目前無高信心加碼訊號")
+
+    # 新進場
+    st.markdown("##### 🌟 新進場標的")
+    new_entries = conviction_summary.get("new_entries", [])
+
+    if new_entries:
+        df = pd.DataFrame([
+            {
+                "代碼": s.code,
+                "名稱": s.name,
+                "進場權重(%)": f"{s.current_weight:.2f}",
+                "信心度": s.conviction_level
+            }
+            for s in new_entries[:10]
+        ])
+        st.dataframe(df, hide_index=True, use_container_width=True)
+    else:
+        st.info("本期無新進場標的")
+
+    # 信心下降 / 出清
+    st.markdown("##### ⚠️ 信心下降 / 出清")
+    exits = conviction_summary.get("exits", [])
+    decreases = [s for s in conviction_summary.get("top_decreases", []) if s.signal in ["信心下降", "小幅減碼"]]
+
+    warning_list = exits + decreases
+    if warning_list:
+        df = pd.DataFrame([
+            {
+                "代碼": s.code,
+                "名稱": s.name,
+                "前期權重(%)": f"{s.prev_weight:.2f}",
+                "當前權重(%)": f"{s.current_weight:.2f}",
+                "訊號": s.signal
+            }
+            for s in warning_list[:10]
+        ])
+        st.dataframe(df, hide_index=True, use_container_width=True)
+    else:
+        st.info("本期無信心下降或出清標的")
