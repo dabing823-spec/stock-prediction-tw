@@ -80,6 +80,20 @@ class WeightSignal:
     conviction_level: str  # "高", "中", "低"
 
 
+@dataclass
+class ConsecutiveChange:
+    """連續加碼/減碼記錄"""
+    code: str
+    name: str
+    change_type: str  # "加碼" or "減碼"
+    consecutive_days: int  # 連續天數
+    total_weight_change: float  # 總權重變化
+    current_weight: float
+    weight_history: List[float]  # 近期權重歷史
+    shares_history: List[int]  # 近期股數歷史
+    is_new_position: bool  # 是否為新建倉
+
+
 # =============================================================================
 # 歷史資料載入
 # =============================================================================
@@ -486,6 +500,116 @@ def get_conviction_summary(signals: List[WeightSignal]) -> Dict[str, Any]:
         "top_decreases": [s for s in signals if s.weight_change < 0][:5],
         "new_entries": [s for s in signals if s.signal == "新進場"],
         "exits": [s for s in signals if s.signal == "已出清"],
+    }
+
+
+# =============================================================================
+# 連續加碼/減碼分析
+# =============================================================================
+
+def analyze_consecutive_changes(historical_data: Dict[str, Any]) -> Dict[str, List[ConsecutiveChange]]:
+    """
+    分析連續加碼/減碼的股票
+    返回 {"increases": [...], "decreases": [...]}
+    """
+    holdings_by_date = historical_data.get("holdings", {})
+    dates = historical_data.get("dates", [])
+
+    if len(dates) < 2:
+        return {"increases": [], "decreases": []}
+
+    # 建立每檔股票的歷史
+    stock_history: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+        "weights": [],
+        "shares": [],
+        "dates": [],
+        "name": ""
+    })
+
+    for date in dates:
+        holdings = holdings_by_date.get(date, [])
+        codes_in_date = set()
+
+        for h in holdings:
+            stock_history[h.code]["weights"].append(h.weight)
+            stock_history[h.code]["shares"].append(h.shares)
+            stock_history[h.code]["dates"].append(date)
+            stock_history[h.code]["name"] = h.name
+            codes_in_date.add(h.code)
+
+        # 對於該日期不存在的股票，填入 0
+        for code in stock_history:
+            if code not in codes_in_date and stock_history[code]["dates"]:
+                if stock_history[code]["dates"][-1] != date:
+                    stock_history[code]["weights"].append(0)
+                    stock_history[code]["shares"].append(0)
+                    stock_history[code]["dates"].append(date)
+
+    consecutive_increases = []
+    consecutive_decreases = []
+
+    for code, data in stock_history.items():
+        if len(data["weights"]) < 2:
+            continue
+
+        weights = data["weights"]
+        shares = data["shares"]
+        name = data["name"]
+
+        # 計算連續加碼天數
+        consecutive_up = 0
+        for i in range(len(weights) - 1, 0, -1):
+            if weights[i] > weights[i - 1] and weights[i] > 0:
+                consecutive_up += 1
+            else:
+                break
+
+        # 計算連續減碼天數
+        consecutive_down = 0
+        for i in range(len(weights) - 1, 0, -1):
+            if weights[i] < weights[i - 1] and weights[i - 1] > 0:
+                consecutive_down += 1
+            else:
+                break
+
+        current_weight = weights[-1] if weights else 0
+        is_new = len([w for w in weights if w > 0]) <= 2 and current_weight > 0
+
+        if consecutive_up >= 2:
+            total_change = weights[-1] - weights[-(consecutive_up + 1)] if len(weights) > consecutive_up else 0
+            consecutive_increases.append(ConsecutiveChange(
+                code=code,
+                name=name,
+                change_type="加碼",
+                consecutive_days=consecutive_up,
+                total_weight_change=total_change,
+                current_weight=current_weight,
+                weight_history=weights[-5:] if len(weights) >= 5 else weights,
+                shares_history=shares[-5:] if len(shares) >= 5 else shares,
+                is_new_position=is_new
+            ))
+
+        if consecutive_down >= 2 and current_weight > 0:
+            total_change = weights[-1] - weights[-(consecutive_down + 1)] if len(weights) > consecutive_down else 0
+            consecutive_decreases.append(ConsecutiveChange(
+                code=code,
+                name=name,
+                change_type="減碼",
+                consecutive_days=consecutive_down,
+                total_weight_change=total_change,
+                current_weight=current_weight,
+                weight_history=weights[-5:] if len(weights) >= 5 else weights,
+                shares_history=shares[-5:] if len(shares) >= 5 else shares,
+                is_new_position=False
+            ))
+
+    # 按連續天數和權重變化排序
+    consecutive_increases.sort(key=lambda x: (x.consecutive_days, abs(x.total_weight_change)), reverse=True)
+    consecutive_decreases.sort(key=lambda x: (x.consecutive_days, abs(x.total_weight_change)), reverse=True)
+
+    return {
+        "increases": consecutive_increases,
+        "decreases": consecutive_decreases
     }
 
 

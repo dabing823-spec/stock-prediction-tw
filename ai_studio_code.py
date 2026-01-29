@@ -60,6 +60,11 @@ from ui_components import (
     render_cash_level_analysis,
     render_holding_period_analysis,
     render_weight_signals,
+    # PocketStock 風格組件
+    render_pocketstock_summary_cards,
+    render_consecutive_changes_box,
+    render_holdings_table_with_search,
+    render_etf_header_card,
 )
 from etf_rotation import (
     THEME_ETFS,
@@ -94,6 +99,7 @@ from etf_analytics import (
     get_holding_statistics,
     analyze_weight_signals,
     get_conviction_summary,
+    analyze_consecutive_changes,
 )
 
 
@@ -136,7 +142,25 @@ def load_market_data():
 
 def _render_etf_analysis_result(result, etf_code: str, date_new: str, date_old: str):
     """渲染 ETF 持股分析結果 (共用函數)"""
-    # ETF 摘要
+    # 格式化日期顯示
+    if len(date_new) == 8:
+        formatted_date = f"{date_new[:4]}-{date_new[4:6]}-{date_new[6:8]}"
+    else:
+        formatted_date = date_new
+
+    # PocketStock 風格摘要卡片
+    total_holdings = len([h for h in result.all_holdings if h.shares_new > 0])
+    new_increased = len(result.new_positions) + len([h for h in result.increased if h.change_pct >= 10])
+    removed_decreased = len(result.exited) + len([h for h in result.decreased if h.change_pct <= -10])
+
+    render_pocketstock_summary_cards(
+        total_holdings=total_holdings,
+        last_update=formatted_date,
+        new_increased=new_increased,
+        removed_decreased=removed_decreased
+    )
+
+    # ETF 摘要 (原有)
     render_etf_summary_card(result.summary, date_new, date_old)
 
     # 變動統計
@@ -184,12 +208,12 @@ def _render_etf_analysis_result(result, etf_code: str, date_new: str, date_old: 
     # Top 持股
     render_top_holdings_table(result.top_holdings)
 
-    # 完整資料表
-    with st.expander("📋 查看完整持股變動明細"):
+    # 完整資料表 (含搜尋功能)
+    with st.expander("📋 查看完整持股變動明細", expanded=False):
         df_display = pd.DataFrame([
             {
-                "代碼": h.code,
-                "名稱": h.name,
+                "股票代號": h.code,
+                "股票名稱": h.name,
                 "權重(%)": f"{h.weight:.2f}" if h.weight else "—",
                 "前股數": format_shares(h.shares_old),
                 "今股數": format_shares(h.shares_new),
@@ -201,7 +225,25 @@ def _render_etf_analysis_result(result, etf_code: str, date_new: str, date_old: 
             }
             for h in result.all_holdings
         ])
-        st.dataframe(df_display, hide_index=True, use_container_width=True)
+
+        # 搜尋功能
+        search_query = st.text_input(
+            "🔍 搜尋股票代號或名稱...",
+            placeholder="輸入代號或名稱篩選",
+            key="holdings_detail_search"
+        )
+
+        if search_query:
+            mask = (
+                df_display["股票代號"].astype(str).str.contains(search_query, case=False, na=False) |
+                df_display["股票名稱"].astype(str).str.contains(search_query, case=False, na=False)
+            )
+            filtered_df = df_display[mask]
+            st.caption(f"找到 {len(filtered_df)} 筆結果")
+        else:
+            filtered_df = df_display
+
+        st.dataframe(filtered_df, hide_index=True, use_container_width=True)
 
     # 下載報告
     st.download_button(
@@ -817,19 +859,69 @@ def main():
     # Tab 8: 主動型 ETF 追蹤
     # ==========================================================================
     with tab8:
-        render_active_etf_strategy_box()
-
         # ETF 選擇
         etf_options = {f"{code} {info['name']}": code for code, info in ACTIVE_ETFS.items()}
         selected_etf_display = st.selectbox(
             "選擇追蹤的主動型 ETF",
             options=list(etf_options.keys()),
-            index=0
+            index=0,
+            label_visibility="collapsed"
         )
         selected_etf = etf_options[selected_etf_display]
         etf_info = ACTIVE_ETFS[selected_etf]
 
-        st.info(f"📋 **{etf_info['name']}** | 經理公司: {etf_info['manager']} | {etf_info['description']}")
+        # PocketStock 風格標題卡片
+        render_etf_header_card(
+            etf_name=etf_info['name'],
+            etf_code=selected_etf,
+            manager=etf_info.get('manager')
+        )
+
+        # 載入連續加碼/減碼資料 (如果有 Google Drive)
+        has_drive = etf_info.get("drive_folder") is not None
+        if has_drive:
+            # 嘗試載入歷史資料以分析連續變化
+            if "tab8_consecutive_data" not in st.session_state:
+                st.session_state.tab8_consecutive_data = None
+
+            col_load, col_status = st.columns([1, 3])
+            with col_load:
+                if st.button("🔄 載入連續加碼分析", use_container_width=True):
+                    with st.spinner("分析連續加碼/減碼趨勢..."):
+                        try:
+                            historical = load_historical_data(selected_etf, num_dates=5)
+                            if historical.get("dates"):
+                                consecutive_data = analyze_consecutive_changes(historical)
+                                st.session_state.tab8_consecutive_data = consecutive_data
+                                st.session_state.tab8_last_update = historical["dates"][-1] if historical["dates"] else ""
+                                st.session_state.tab8_total_holdings = len(historical["holdings"].get(historical["dates"][-1], [])) if historical["dates"] else 0
+                        except Exception as e:
+                            st.error(f"載入失敗: {e}")
+
+            # 顯示連續加碼/減碼
+            if st.session_state.get("tab8_consecutive_data"):
+                consecutive_data = st.session_state.tab8_consecutive_data
+                last_update = st.session_state.get("tab8_last_update", "")
+                total_holdings = st.session_state.get("tab8_total_holdings", 0)
+
+                # 格式化日期
+                if last_update and len(last_update) == 8:
+                    formatted_date = f"{last_update[:4]}-{last_update[4:6]}-{last_update[6:8]}"
+                else:
+                    formatted_date = last_update
+
+                # 摘要卡片
+                new_increased = len(consecutive_data.get("increases", []))
+                removed_decreased = len(consecutive_data.get("decreases", []))
+                render_pocketstock_summary_cards(
+                    total_holdings=total_holdings,
+                    last_update=formatted_date,
+                    new_increased=new_increased,
+                    removed_decreased=removed_decreased
+                )
+
+                # 連續加碼/減碼提示框
+                render_consecutive_changes_box(consecutive_data)
 
         st.divider()
 
