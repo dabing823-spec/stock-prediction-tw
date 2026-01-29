@@ -1693,53 +1693,26 @@ def render_pocketstock_summary_cards(
     removed_decreased: int
 ):
     """
-    渲染 PocketStock 風格的 4 格摘要卡片
+    渲染 PocketStock 風格的 4 格摘要卡片 (使用 Streamlit 原生組件)
     """
-    st.markdown(f"""
-    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px;">
-        <div style="
-            background: rgba(45, 52, 54, 0.9);
-            border-radius: 12px;
-            padding: 16px;
-            text-align: left;
-        ">
-            <div style="color: rgba(255,255,255,0.6); font-size: 12px; margin-bottom: 4px;">持股數量</div>
-            <div style="color: #fff; font-size: 28px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">{total_holdings}</div>
-        </div>
-        <div style="
-            background: rgba(45, 52, 54, 0.9);
-            border-radius: 12px;
-            padding: 16px;
-            text-align: left;
-        ">
-            <div style="color: rgba(255,255,255,0.6); font-size: 12px; margin-bottom: 4px;">最新更新</div>
-            <div style="color: #fff; font-size: 20px; font-weight: 600; font-family: 'JetBrains Mono', monospace;">{last_update}</div>
-        </div>
-        <div style="
-            background: linear-gradient(135deg, rgba(85, 239, 196, 0.3) 0%, rgba(85, 239, 196, 0.1) 100%);
-            border-radius: 12px;
-            padding: 16px;
-            text-align: left;
-        ">
-            <div style="color: rgba(85, 239, 196, 0.9); font-size: 12px; margin-bottom: 4px;">新增/增加</div>
-            <div style="color: #55efc4; font-size: 28px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">{new_increased}</div>
-        </div>
-        <div style="
-            background: linear-gradient(135deg, rgba(255, 118, 117, 0.3) 0%, rgba(255, 118, 117, 0.1) 100%);
-            border-radius: 12px;
-            padding: 16px;
-            text-align: left;
-        ">
-            <div style="color: rgba(255, 118, 117, 0.9); font-size: 12px; margin-bottom: 4px;">移除/減少</div>
-            <div style="color: #ff7675; font-size: 28px; font-weight: 700; font-family: 'JetBrains Mono', monospace;">{removed_decreased}</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(label="持股數量", value=total_holdings)
+
+    with col2:
+        st.metric(label="最新更新", value=last_update)
+
+    with col3:
+        st.metric(label="🟢 新增/增加", value=new_increased, delta=f"+{new_increased}" if new_increased > 0 else None)
+
+    with col4:
+        st.metric(label="🔴 移除/減少", value=removed_decreased, delta=f"-{removed_decreased}" if removed_decreased > 0 else None, delta_color="inverse")
 
 
 def render_consecutive_changes_box(consecutive_data: dict):
     """
-    渲染連續加碼/減碼個股提示框
+    渲染連續加碼/減碼個股提示框 (使用 Streamlit 原生組件)
     """
     increases = consecutive_data.get("increases", [])
     decreases = consecutive_data.get("decreases", [])
@@ -1749,99 +1722,62 @@ def render_consecutive_changes_box(consecutive_data: dict):
 
     # 連續加碼
     if increases:
-        items_html = ""
-        for item in increases[:5]:
-            badge_color = "#00b894" if item.is_new_position else "#55efc4"
-            badge_text = "新" if item.is_new_position else ""
-            items_html += f"""
-            <span style="
-                display: inline-flex;
-                align-items: center;
-                gap: 4px;
-                background: rgba(85, 239, 196, 0.2);
-                border: 1px solid rgba(85, 239, 196, 0.4);
-                border-radius: 20px;
-                padding: 4px 12px;
-                margin: 4px;
-                font-size: 13px;
-            ">
-                <span style="color: #fff;">{item.name}</span>
-                <span style="color: rgba(255,255,255,0.6);">({item.code})</span>
-                <span style="
-                    background: {badge_color};
-                    color: #000;
-                    padding: 2px 6px;
-                    border-radius: 10px;
-                    font-size: 11px;
-                    font-weight: 600;
-                ">⬆ {item.consecutive_days}天{badge_text}</span>
-            </span>
-            """
-
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, rgba(85, 239, 196, 0.1) 0%, rgba(45, 52, 54, 0.95) 100%);
-            border-left: 4px solid #55efc4;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 16px;
-        ">
-            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
-                <span style="font-size: 20px;">📈</span>
-                <span style="color: #55efc4; font-weight: 600;">連續加碼個股 ({len(increases)})</span>
-            </div>
-            <div style="display: flex; flex-wrap: wrap;">
-                {items_html}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.success(f"📈 **連續加碼個股** ({len(increases)})")
+        cols = st.columns(min(len(increases[:5]), 5))
+        for i, item in enumerate(increases[:5]):
+            with cols[i]:
+                badge = "🆕" if item.is_new_position else ""
+                st.markdown(f"""
+                <div style="
+                    background: rgba(85, 239, 196, 0.15);
+                    border: 1px solid rgba(85, 239, 196, 0.4);
+                    border-radius: 12px;
+                    padding: 12px;
+                    text-align: center;
+                ">
+                    <div style="color: #fff; font-weight: 600; font-size: 14px;">{item.name} {badge}</div>
+                    <div style="color: rgba(255,255,255,0.6); font-size: 12px;">{item.code}</div>
+                    <div style="
+                        background: #55efc4;
+                        color: #000;
+                        padding: 4px 8px;
+                        border-radius: 8px;
+                        font-size: 12px;
+                        font-weight: 700;
+                        margin-top: 8px;
+                        display: inline-block;
+                    ">⬆ {item.consecutive_days}天</div>
+                </div>
+                """, unsafe_allow_html=True)
 
     # 連續減碼
     if decreases:
-        items_html = ""
-        for item in decreases[:5]:
-            items_html += f"""
-            <span style="
-                display: inline-flex;
-                align-items: center;
-                gap: 4px;
-                background: rgba(255, 118, 117, 0.2);
-                border: 1px solid rgba(255, 118, 117, 0.4);
-                border-radius: 20px;
-                padding: 4px 12px;
-                margin: 4px;
-                font-size: 13px;
-            ">
-                <span style="color: #fff;">{item.name}</span>
-                <span style="color: rgba(255,255,255,0.6);">({item.code})</span>
-                <span style="
-                    background: #ff7675;
-                    color: #fff;
-                    padding: 2px 6px;
-                    border-radius: 10px;
-                    font-size: 11px;
-                    font-weight: 600;
-                ">⬇ {item.consecutive_days}天</span>
-            </span>
-            """
-
-        st.markdown(f"""
-        <div style="
-            background: linear-gradient(135deg, rgba(255, 118, 117, 0.1) 0%, rgba(45, 52, 54, 0.95) 100%);
-            border-left: 4px solid #ff7675;
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 16px;
-        ">
-            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
-                <span style="font-size: 20px;">📉</span>
-                <span style="color: #ff7675; font-weight: 600;">連續減碼個股 ({len(decreases)})</span>
-            </div>
-            <div style="display: flex; flex-wrap: wrap;">
-                {items_html}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        st.error(f"📉 **連續減碼個股** ({len(decreases)})")
+        cols = st.columns(min(len(decreases[:5]), 5))
+        for i, item in enumerate(decreases[:5]):
+            with cols[i]:
+                st.markdown(f"""
+                <div style="
+                    background: rgba(255, 118, 117, 0.15);
+                    border: 1px solid rgba(255, 118, 117, 0.4);
+                    border-radius: 12px;
+                    padding: 12px;
+                    text-align: center;
+                ">
+                    <div style="color: #fff; font-weight: 600; font-size: 14px;">{item.name}</div>
+                    <div style="color: rgba(255,255,255,0.6); font-size: 12px;">{item.code}</div>
+                    <div style="
+                        background: #ff7675;
+                        color: #fff;
+                        padding: 4px 8px;
+                        border-radius: 8px;
+                        font-size: 12px;
+                        font-weight: 700;
+                        margin-top: 8px;
+                        display: inline-block;
+                    ">⬇ {item.consecutive_days}天</div>
+                </div>
+                """, unsafe_allow_html=True)
 
 
 def render_holdings_table_with_search(holdings_df, column_config=None):
@@ -1879,25 +1815,8 @@ def render_holdings_table_with_search(holdings_df, column_config=None):
 
 def render_etf_header_card(etf_name: str, etf_code: str, manager: str = None):
     """
-    渲染 ETF 標題卡片 (PocketStock 風格)
+    渲染 ETF 標題卡片 (使用 Streamlit 原生組件)
     """
-    manager_html = f'<div style="color: rgba(255,255,255,0.5); font-size: 13px; margin-top: 4px;">經理公司: {manager}</div>' if manager else ""
-
-    st.markdown(f"""
-    <div style="
-        background: linear-gradient(135deg, rgba(38, 39, 48, 0.95) 0%, rgba(30, 35, 41, 0.98) 100%);
-        border-radius: 16px;
-        padding: 24px;
-        margin-bottom: 20px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-    ">
-        <div style="display: flex; align-items: center; gap: 12px;">
-            <span style="font-size: 24px;">←</span>
-            <div>
-                <div style="color: #fff; font-size: 24px; font-weight: 700;">{etf_name}</div>
-                <div style="color: rgba(255,255,255,0.6); font-size: 14px;">代碼: {etf_code}</div>
-                {manager_html}
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    st.subheader(f"🎯 {etf_name}")
+    manager_text = f" | 經理公司: {manager}" if manager else ""
+    st.caption(f"代碼: {etf_code}{manager_text}")
