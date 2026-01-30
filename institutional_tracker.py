@@ -1,19 +1,18 @@
 """
-法人籌碼追蹤器 - 自動從期交所抓取法人期貨/選擇權部位
-Institutional Position Tracker - Auto-fetch from TAIFEX
+法人籌碼追蹤器 - 自動從期交所 OpenAPI 抓取法人期貨/選擇權部位
+Institutional Position Tracker - Auto-fetch from TAIFEX OpenAPI
 """
 
 import requests
-import pandas as pd
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, List, Dict, Any
 from functools import wraps
 import hashlib
 import time
 
 # 簡易快取
-_inst_cache: Dict[str, Tuple[float, any]] = {}
+_inst_cache: Dict[str, tuple] = {}
 
 def inst_cache(ttl_seconds: int = 600):
     """快取裝飾器，預設10分鐘"""
@@ -41,33 +40,29 @@ class FuturesPosition:
     product: str           # 商品名稱
     foreign_long: int      # 外資多單
     foreign_short: int     # 外資空單
-    foreign_net: int       # 外資淨部位
+    foreign_net: int       # 外資淨部位 (未平倉)
+    foreign_net_change: int  # 外資淨變化 (當日交易)
     dealer_long: int       # 自營商多單
     dealer_short: int      # 自營商空單
     dealer_net: int        # 自營商淨部位
+    dealer_net_change: int # 自營商淨變化
     trust_long: int        # 投信多單
     trust_short: int       # 投信空單
     trust_net: int         # 投信淨部位
+    trust_net_change: int  # 投信淨變化
     date: str              # 日期
 
 
 @dataclass
-class OptionsPosition:
-    """選擇權部位資料"""
-    call_foreign_long: int
-    call_foreign_short: int
-    call_foreign_net: int
-    put_foreign_long: int
-    put_foreign_short: int
-    put_foreign_net: int
-    call_dealer_long: int
-    call_dealer_short: int
-    call_dealer_net: int
-    put_dealer_long: int
-    put_dealer_short: int
-    put_dealer_net: int
-    pc_ratio: float        # Put/Call Ratio
+class PutCallRatioData:
+    """Put/Call Ratio 資料"""
     date: str
+    put_volume: int
+    call_volume: int
+    pc_volume_ratio: float    # 成交量 P/C Ratio
+    put_oi: int               # Put 未平倉
+    call_oi: int              # Call 未平倉
+    pc_oi_ratio: float        # 未平倉 P/C Ratio
 
 
 @dataclass
@@ -80,97 +75,103 @@ class InstitutionalSignal:
     summary: str           # 文字摘要
     details: List[str]     # 詳細說明
     futures_position: Optional[FuturesPosition]
-    options_position: Optional[OptionsPosition]
+    pc_ratio: Optional[PutCallRatioData]
     date: str
 
 
-def parse_number(s: str) -> int:
-    """解析數字，處理逗號和負號"""
-    if not s or s == '-':
+TAIFEX_API_BASE = "https://openapi.taifex.com.tw/v1"
+
+
+def parse_int(s: Any) -> int:
+    """安全解析整數"""
+    if s is None or s == '':
         return 0
     try:
-        return int(s.replace(',', '').replace(' ', ''))
+        return int(str(s).replace(',', ''))
     except:
         return 0
 
 
+def parse_float(s: Any) -> float:
+    """安全解析浮點數"""
+    if s is None or s == '':
+        return 0.0
+    try:
+        return float(str(s).replace(',', ''))
+    except:
+        return 0.0
+
+
 @inst_cache(ttl_seconds=600)
-def fetch_futures_positions(date: Optional[str] = None) -> Optional[FuturesPosition]:
+def fetch_futures_positions() -> Optional[FuturesPosition]:
     """
-    從期交所抓取三大法人期貨部位
-    https://www.taifex.com.tw/cht/3/futContractsDate
+    從期交所 OpenAPI 抓取三大法人台指期部位
+    API: /MarketDataOfMajorInstitutionalTradersDetailsOfFuturesContractsBytheDate
     """
-    if date is None:
-        # 使用最近交易日
-        date = get_latest_trading_date()
-
-    url = "https://www.taifex.com.tw/cht/3/futContractsDateDown"
-
-    # 格式化日期 YYYY/MM/DD
-    formatted_date = date.replace('-', '/')
-
-    params = {
-        'queryDate': formatted_date,
-        'commodityId': 'TXF'  # 台指期
-    }
+    url = f"{TAIFEX_API_BASE}/MarketDataOfMajorInstitutionalTradersDetailsOfFuturesContractsBytheDate"
 
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'https://www.taifex.com.tw/cht/3/futContractsDate'
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0'
         }
 
-        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
 
         if response.status_code != 200:
+            print(f"API 回應錯誤: {response.status_code}")
             return None
 
-        # 嘗試解析 CSV
-        lines = response.text.strip().split('\n')
+        data = response.json()
 
-        # 尋找台指期的資料
-        foreign_net = 0
-        dealer_net = 0
-        trust_net = 0
-        foreign_long = 0
-        foreign_short = 0
-        dealer_long = 0
-        dealer_short = 0
-        trust_long = 0
-        trust_short = 0
+        if not data:
+            return None
 
-        for line in lines:
-            cols = line.split(',')
-            if len(cols) < 10:
+        # 找到台股期貨的資料
+        foreign_data = None
+        dealer_data = None
+        trust_data = None
+        date = None
+
+        for item in data:
+            contract = item.get('ContractCode', '')
+            identity = item.get('Item', '')
+
+            # 只看台股期貨 (大台)
+            if '臺股期貨' not in contract:
                 continue
 
-            # 期交所格式：契約,身份別,多方口數,多方金額,空方口數,空方金額,淨額口數,淨額金額
-            identity = cols[1].strip() if len(cols) > 1 else ""
+            if date is None:
+                date = item.get('Date', '')
 
-            if '外資' in identity or 'Foreign' in identity:
-                foreign_long = parse_number(cols[2]) if len(cols) > 2 else 0
-                foreign_short = parse_number(cols[4]) if len(cols) > 4 else 0
-                foreign_net = parse_number(cols[6]) if len(cols) > 6 else 0
-            elif '自營商' in identity or 'Dealer' in identity:
-                dealer_long = parse_number(cols[2]) if len(cols) > 2 else 0
-                dealer_short = parse_number(cols[4]) if len(cols) > 4 else 0
-                dealer_net = parse_number(cols[6]) if len(cols) > 6 else 0
-            elif '投信' in identity or 'Trust' in identity:
-                trust_long = parse_number(cols[2]) if len(cols) > 2 else 0
-                trust_short = parse_number(cols[4]) if len(cols) > 4 else 0
-                trust_net = parse_number(cols[6]) if len(cols) > 6 else 0
+            if '外資' in identity:
+                foreign_data = item
+            elif '自營商' in identity:
+                dealer_data = item
+            elif '投信' in identity:
+                trust_data = item
+
+        if not date:
+            return None
+
+        # 格式化日期
+        if len(date) == 8:
+            date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
 
         return FuturesPosition(
             product="台指期",
-            foreign_long=foreign_long,
-            foreign_short=foreign_short,
-            foreign_net=foreign_net,
-            dealer_long=dealer_long,
-            dealer_short=dealer_short,
-            dealer_net=dealer_net,
-            trust_long=trust_long,
-            trust_short=trust_short,
-            trust_net=trust_net,
+            foreign_long=parse_int(foreign_data.get('OpenInterest(Long)', 0)) if foreign_data else 0,
+            foreign_short=parse_int(foreign_data.get('OpenInterest(Short)', 0)) if foreign_data else 0,
+            foreign_net=parse_int(foreign_data.get('OpenInterest(Net)', 0)) if foreign_data else 0,
+            foreign_net_change=parse_int(foreign_data.get('TradingVolume(Net)', 0)) if foreign_data else 0,
+            dealer_long=parse_int(dealer_data.get('OpenInterest(Long)', 0)) if dealer_data else 0,
+            dealer_short=parse_int(dealer_data.get('OpenInterest(Short)', 0)) if dealer_data else 0,
+            dealer_net=parse_int(dealer_data.get('OpenInterest(Net)', 0)) if dealer_data else 0,
+            dealer_net_change=parse_int(dealer_data.get('TradingVolume(Net)', 0)) if dealer_data else 0,
+            trust_long=parse_int(trust_data.get('OpenInterest(Long)', 0)) if trust_data else 0,
+            trust_short=parse_int(trust_data.get('OpenInterest(Short)', 0)) if trust_data else 0,
+            trust_net=parse_int(trust_data.get('OpenInterest(Net)', 0)) if trust_data else 0,
+            trust_net_change=parse_int(trust_data.get('TradingVolume(Net)', 0)) if trust_data else 0,
             date=date
         )
 
@@ -180,219 +181,149 @@ def fetch_futures_positions(date: Optional[str] = None) -> Optional[FuturesPosit
 
 
 @inst_cache(ttl_seconds=600)
-def fetch_options_positions(date: Optional[str] = None) -> Optional[OptionsPosition]:
+def fetch_put_call_ratio() -> Optional[PutCallRatioData]:
     """
-    從期交所抓取三大法人選擇權部位
-    https://www.taifex.com.tw/cht/3/callsAndPutsDateDown
+    從期交所 OpenAPI 抓取 Put/Call Ratio
+    API: /PutCallRatio
     """
-    if date is None:
-        date = get_latest_trading_date()
-
-    url = "https://www.taifex.com.tw/cht/3/callsAndPutsDateDown"
-    formatted_date = date.replace('-', '/')
-
-    params = {
-        'queryDate': formatted_date,
-        'commodityId': 'TXO'  # 台指選擇權
-    }
+    url = f"{TAIFEX_API_BASE}/PutCallRatio"
 
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'https://www.taifex.com.tw/cht/3/callsAndPutsDate'
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0'
         }
 
-        response = requests.get(url, params=params, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
 
         if response.status_code != 200:
             return None
 
-        lines = response.text.strip().split('\n')
+        data = response.json()
 
-        # 初始化
-        call_foreign_long = call_foreign_short = call_foreign_net = 0
-        put_foreign_long = put_foreign_short = put_foreign_net = 0
-        call_dealer_long = call_dealer_short = call_dealer_net = 0
-        put_dealer_long = put_dealer_short = put_dealer_net = 0
+        if not data:
+            return None
 
-        current_type = ""  # CALL or PUT
+        # 取最新一筆資料
+        latest = data[0]
 
-        for line in lines:
-            cols = line.split(',')
-            if len(cols) < 7:
-                continue
+        date = latest.get('Date', '')
+        if len(date) == 8:
+            date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
 
-            # 判斷是 CALL 還是 PUT
-            first_col = cols[0].strip().upper()
-            if 'CALL' in first_col or '買權' in first_col:
-                current_type = "CALL"
-            elif 'PUT' in first_col or '賣權' in first_col:
-                current_type = "PUT"
-
-            identity = cols[1].strip() if len(cols) > 1 else ""
-
-            if '外資' in identity or 'Foreign' in identity:
-                if current_type == "CALL":
-                    call_foreign_long = parse_number(cols[2]) if len(cols) > 2 else 0
-                    call_foreign_short = parse_number(cols[4]) if len(cols) > 4 else 0
-                    call_foreign_net = parse_number(cols[6]) if len(cols) > 6 else 0
-                elif current_type == "PUT":
-                    put_foreign_long = parse_number(cols[2]) if len(cols) > 2 else 0
-                    put_foreign_short = parse_number(cols[4]) if len(cols) > 4 else 0
-                    put_foreign_net = parse_number(cols[6]) if len(cols) > 6 else 0
-
-            elif '自營商' in identity or 'Dealer' in identity:
-                if current_type == "CALL":
-                    call_dealer_long = parse_number(cols[2]) if len(cols) > 2 else 0
-                    call_dealer_short = parse_number(cols[4]) if len(cols) > 4 else 0
-                    call_dealer_net = parse_number(cols[6]) if len(cols) > 6 else 0
-                elif current_type == "PUT":
-                    put_dealer_long = parse_number(cols[2]) if len(cols) > 2 else 0
-                    put_dealer_short = parse_number(cols[4]) if len(cols) > 4 else 0
-                    put_dealer_net = parse_number(cols[6]) if len(cols) > 6 else 0
-
-        # 計算 Put/Call Ratio
-        total_call = abs(call_foreign_net) + abs(call_dealer_net)
-        total_put = abs(put_foreign_net) + abs(put_dealer_net)
-        pc_ratio = total_put / total_call if total_call > 0 else 1.0
-
-        return OptionsPosition(
-            call_foreign_long=call_foreign_long,
-            call_foreign_short=call_foreign_short,
-            call_foreign_net=call_foreign_net,
-            put_foreign_long=put_foreign_long,
-            put_foreign_short=put_foreign_short,
-            put_foreign_net=put_foreign_net,
-            call_dealer_long=call_dealer_long,
-            call_dealer_short=call_dealer_short,
-            call_dealer_net=call_dealer_net,
-            put_dealer_long=put_dealer_long,
-            put_dealer_short=put_dealer_short,
-            put_dealer_net=put_dealer_net,
-            pc_ratio=pc_ratio,
-            date=date
+        return PutCallRatioData(
+            date=date,
+            put_volume=parse_int(latest.get('PutVolume', 0)),
+            call_volume=parse_int(latest.get('CallVolume', 0)),
+            pc_volume_ratio=parse_float(latest.get('PutCallVolumeRatio%', 100)) / 100,
+            put_oi=parse_int(latest.get('PutOI', 0)),
+            call_oi=parse_int(latest.get('CallOI', 0)),
+            pc_oi_ratio=parse_float(latest.get('PutCallOIRatio%', 100)) / 100,
         )
 
     except Exception as e:
-        print(f"抓取選擇權資料失敗: {e}")
+        print(f"抓取 P/C Ratio 失敗: {e}")
         return None
-
-
-def get_latest_trading_date() -> str:
-    """取得最近交易日 (排除週末)"""
-    today = datetime.now()
-
-    # 如果是週末，往前推到週五
-    if today.weekday() == 5:  # 週六
-        today = today - timedelta(days=1)
-    elif today.weekday() == 6:  # 週日
-        today = today - timedelta(days=2)
-
-    # 如果現在是盤中（下午3點前），使用前一交易日
-    if today.hour < 15:
-        today = today - timedelta(days=1)
-        if today.weekday() == 5:
-            today = today - timedelta(days=1)
-        elif today.weekday() == 6:
-            today = today - timedelta(days=2)
-
-    return today.strftime('%Y-%m-%d')
 
 
 def analyze_institutional_signal(
     futures: Optional[FuturesPosition],
-    options: Optional[OptionsPosition]
+    pc_ratio: Optional[PutCallRatioData]
 ) -> InstitutionalSignal:
     """
     分析法人籌碼，產生綜合訊號
 
     判斷邏輯：
-    1. 外資期貨淨多/淨空 (權重 40%)
-    2. 自營商期貨淨部位 (權重 20%)
-    3. 選擇權 Put/Call Ratio (權重 20%)
-    4. 外資選擇權偏多偏空 (權重 20%)
+    1. 外資期貨淨部位 (未平倉) - 權重 40%
+    2. 外資期貨淨變化 (當日交易) - 權重 20%
+    3. 自營商期貨淨部位 - 權重 15%
+    4. 選擇權 Put/Call Ratio (未平倉) - 權重 25%
     """
-    date = futures.date if futures else (options.date if options else get_latest_trading_date())
+    date = futures.date if futures else (pc_ratio.date if pc_ratio else datetime.now().strftime('%Y-%m-%d'))
 
-    signals = []
     details = []
     score = 0  # -100 到 +100
 
     # 1. 分析期貨部位
     if futures:
-        # 外資期貨
-        if futures.foreign_net > 5000:
+        # 外資期貨未平倉淨部位
+        if futures.foreign_net > 10000:
             score += 30
-            signals.append("bullish")
-            details.append(f"外資期貨淨多 {futures.foreign_net:,} 口 (強勢)")
+            details.append(f"🟢 外資期貨未平倉淨多 {futures.foreign_net:,} 口")
         elif futures.foreign_net > 0:
             score += 15
-            signals.append("bullish")
-            details.append(f"外資期貨淨多 {futures.foreign_net:,} 口")
-        elif futures.foreign_net < -5000:
+            details.append(f"🟢 外資期貨未平倉淨多 {futures.foreign_net:,} 口")
+        elif futures.foreign_net < -10000:
             score -= 30
-            signals.append("bearish")
-            details.append(f"外資期貨淨空 {abs(futures.foreign_net):,} 口 (強勢)")
+            details.append(f"🔴 外資期貨未平倉淨空 {abs(futures.foreign_net):,} 口")
         elif futures.foreign_net < 0:
             score -= 15
-            signals.append("bearish")
-            details.append(f"外資期貨淨空 {abs(futures.foreign_net):,} 口")
+            details.append(f"🔴 外資期貨未平倉淨空 {abs(futures.foreign_net):,} 口")
         else:
-            details.append("外資期貨持平")
+            details.append("⚪ 外資期貨未平倉持平")
+
+        # 外資當日交易淨變化
+        if futures.foreign_net_change > 3000:
+            score += 15
+            details.append(f"🟢 外資今日加碼多單 {futures.foreign_net_change:,} 口")
+        elif futures.foreign_net_change < -3000:
+            score -= 15
+            details.append(f"🔴 外資今日加碼空單 {abs(futures.foreign_net_change):,} 口")
 
         # 自營商期貨
-        if futures.dealer_net > 3000:
-            score += 15
-            details.append(f"自營商期貨淨多 {futures.dealer_net:,} 口")
-        elif futures.dealer_net < -3000:
-            score -= 15
-            details.append(f"自營商期貨淨空 {abs(futures.dealer_net):,} 口")
-    else:
-        details.append("期貨資料暫無法取得")
-
-    # 2. 分析選擇權部位
-    if options:
-        # Put/Call Ratio
-        if options.pc_ratio > 1.5:
-            score -= 20
-            signals.append("bearish")
-            details.append(f"Put/Call Ratio {options.pc_ratio:.2f} (市場偏空)")
-        elif options.pc_ratio > 1.2:
-            score -= 10
-            details.append(f"Put/Call Ratio {options.pc_ratio:.2f} (略偏空)")
-        elif options.pc_ratio < 0.7:
-            score += 20
-            signals.append("bullish")
-            details.append(f"Put/Call Ratio {options.pc_ratio:.2f} (市場偏多)")
-        elif options.pc_ratio < 0.9:
+        if futures.dealer_net > 5000:
             score += 10
-            details.append(f"Put/Call Ratio {options.pc_ratio:.2f} (略偏多)")
-        else:
-            details.append(f"Put/Call Ratio {options.pc_ratio:.2f} (中性)")
+            details.append(f"🟢 自營商期貨淨多 {futures.dealer_net:,} 口")
+        elif futures.dealer_net < -5000:
+            score -= 10
+            details.append(f"🔴 自營商期貨淨空 {abs(futures.dealer_net):,} 口")
 
-        # 外資選擇權
-        call_put_diff = options.call_foreign_net - options.put_foreign_net
-        if call_put_diff > 10000:
-            score += 15
-            details.append(f"外資選擇權偏多 (CALL-PUT={call_put_diff:,})")
-        elif call_put_diff < -10000:
-            score -= 15
-            details.append(f"外資選擇權偏空 (CALL-PUT={call_put_diff:,})")
+        # 投信期貨 (通常量較小，參考即可)
+        if futures.trust_net > 10000:
+            score += 5
+            details.append(f"🟢 投信期貨淨多 {futures.trust_net:,} 口")
+        elif futures.trust_net < -5000:
+            score -= 5
+            details.append(f"🔴 投信期貨淨空 {abs(futures.trust_net):,} 口")
     else:
-        details.append("選擇權資料暫無法取得")
+        details.append("⚠️ 期貨資料暫無法取得")
+
+    # 2. 分析選擇權 Put/Call Ratio
+    if pc_ratio:
+        # 使用未平倉 P/C Ratio (更能反映市場預期)
+        oi_ratio = pc_ratio.pc_oi_ratio
+
+        if oi_ratio > 1.5:
+            # P/C Ratio 高 = 市場買很多 Put = 散戶偏空 = 反向指標可能偏多
+            score += 15
+            details.append(f"🟢 P/C Ratio {oi_ratio:.2f} (散戶偏空，逆向偏多)")
+        elif oi_ratio > 1.2:
+            score += 5
+            details.append(f"🟡 P/C Ratio {oi_ratio:.2f} (略偏空)")
+        elif oi_ratio < 0.8:
+            # P/C Ratio 低 = 市場買很多 Call = 散戶偏多 = 反向指標可能偏空
+            score -= 15
+            details.append(f"🔴 P/C Ratio {oi_ratio:.2f} (散戶偏多，逆向偏空)")
+        elif oi_ratio < 1.0:
+            score -= 5
+            details.append(f"🟡 P/C Ratio {oi_ratio:.2f} (略偏多)")
+        else:
+            details.append(f"⚪ P/C Ratio {oi_ratio:.2f} (中性)")
+    else:
+        details.append("⚠️ 選擇權資料暫無法取得")
 
     # 3. 產生綜合訊號
-    if score >= 30:
+    if score >= 25:
         signal = "bullish"
         color = "green"
         emoji = "🟢"
-        strength = min(5, (score // 20) + 1)
+        strength = min(5, (score // 15) + 1)
         summary = "法人籌碼偏多，可積極操作"
-    elif score <= -30:
+    elif score <= -25:
         signal = "bearish"
         color = "red"
         emoji = "🔴"
-        strength = min(5, (abs(score) // 20) + 1)
+        strength = min(5, (abs(score) // 15) + 1)
         summary = "法人籌碼偏空，宜謹慎防守"
     else:
         signal = "neutral"
@@ -409,7 +340,7 @@ def analyze_institutional_signal(
         summary=summary,
         details=details,
         futures_position=futures,
-        options_position=options,
+        pc_ratio=pc_ratio,
         date=date
     )
 
@@ -419,77 +350,47 @@ def get_institutional_signal() -> InstitutionalSignal:
     主要入口函數：取得最新法人籌碼訊號
     """
     futures = fetch_futures_positions()
-    options = fetch_options_positions()
-    return analyze_institutional_signal(futures, options)
-
-
-# === 備用方案：從期交所網頁直接解析 ===
-
-@inst_cache(ttl_seconds=600)
-def fetch_futures_from_html() -> Optional[FuturesPosition]:
-    """
-    備用方案：從期交所網頁 HTML 抓取
-    """
-    url = "https://www.taifex.com.tw/cht/3/futContractsDate"
-
-    try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-
-        response = requests.get(url, headers=headers, timeout=15)
-        response.encoding = 'utf-8'
-
-        if response.status_code != 200:
-            return None
-
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # 找到資料表格
-        tables = soup.find_all('table', class_='table_f')
-
-        if not tables:
-            return None
-
-        # 解析表格資料
-        # 這裡需要根據實際網頁結構調整
-
-        return None  # 如需要可進一步實作
-
-    except Exception as e:
-        print(f"HTML 抓取失敗: {e}")
-        return None
+    pc_ratio = fetch_put_call_ratio()
+    return analyze_institutional_signal(futures, pc_ratio)
 
 
 # === 測試函數 ===
 
 def test_fetch():
     """測試抓取功能"""
-    print("=== 測試法人籌碼抓取 ===")
+    print("=== 測試法人籌碼抓取 (TAIFEX OpenAPI) ===\n")
 
+    # 測試期貨資料
+    print("1. 抓取台指期三大法人部位...")
+    futures = fetch_futures_positions()
+    if futures:
+        print(f"   日期: {futures.date}")
+        print(f"   外資: 多{futures.foreign_long:,} 空{futures.foreign_short:,} 淨{futures.foreign_net:,} (今日{futures.foreign_net_change:+,})")
+        print(f"   自營: 多{futures.dealer_long:,} 空{futures.dealer_short:,} 淨{futures.dealer_net:,}")
+        print(f"   投信: 多{futures.trust_long:,} 空{futures.trust_short:,} 淨{futures.trust_net:,}")
+    else:
+        print("   抓取失敗")
+
+    # 測試 P/C Ratio
+    print("\n2. 抓取 Put/Call Ratio...")
+    pc = fetch_put_call_ratio()
+    if pc:
+        print(f"   日期: {pc.date}")
+        print(f"   成交量 P/C: {pc.pc_volume_ratio:.2f}")
+        print(f"   未平倉 P/C: {pc.pc_oi_ratio:.2f}")
+        print(f"   Put OI: {pc.put_oi:,}, Call OI: {pc.call_oi:,}")
+    else:
+        print("   抓取失敗")
+
+    # 測試綜合訊號
+    print("\n3. 產生綜合訊號...")
     signal = get_institutional_signal()
-
-    print(f"\n日期: {signal.date}")
-    print(f"訊號: {signal.emoji} {signal.signal.upper()}")
-    print(f"強度: {'★' * signal.strength}{'☆' * (5 - signal.strength)}")
-    print(f"摘要: {signal.summary}")
-    print("\n詳細:")
+    print(f"   {signal.emoji} {signal.signal.upper()}")
+    print(f"   強度: {'★' * signal.strength}{'☆' * (5 - signal.strength)}")
+    print(f"   摘要: {signal.summary}")
+    print("\n   詳細:")
     for detail in signal.details:
-        print(f"  - {detail}")
-
-    if signal.futures_position:
-        f = signal.futures_position
-        print(f"\n期貨部位:")
-        print(f"  外資: 多{f.foreign_long:,} 空{f.foreign_short:,} 淨{f.foreign_net:,}")
-        print(f"  自營: 多{f.dealer_long:,} 空{f.dealer_short:,} 淨{f.dealer_net:,}")
-
-    if signal.options_position:
-        o = signal.options_position
-        print(f"\n選擇權部位:")
-        print(f"  外資CALL淨: {o.call_foreign_net:,}")
-        print(f"  外資PUT淨: {o.put_foreign_net:,}")
-        print(f"  P/C Ratio: {o.pc_ratio:.2f}")
+        print(f"   {detail}")
 
 
 if __name__ == "__main__":

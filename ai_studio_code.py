@@ -341,18 +341,20 @@ def main():
             # 展開詳細資訊
             with st.expander("📋 詳細籌碼", expanded=False):
                 for detail in inst_signal.details:
-                    st.write(f"• {detail}")
+                    st.write(detail)
 
                 if inst_signal.futures_position:
                     f = inst_signal.futures_position
-                    st.markdown("**期貨部位:**")
-                    st.write(f"外資淨: {f.foreign_net:,} 口")
+                    st.markdown("**台指期部位:**")
+                    st.write(f"外資淨: {f.foreign_net:,} 口 (今日 {f.foreign_net_change:+,})")
                     st.write(f"自營淨: {f.dealer_net:,} 口")
+                    st.write(f"投信淨: {f.trust_net:,} 口")
 
-                if inst_signal.options_position:
-                    o = inst_signal.options_position
-                    st.markdown("**選擇權:**")
-                    st.write(f"P/C Ratio: {o.pc_ratio:.2f}")
+                if inst_signal.pc_ratio:
+                    pc = inst_signal.pc_ratio
+                    st.markdown("**選擇權 P/C Ratio:**")
+                    st.write(f"未平倉: {pc.pc_oi_ratio:.2f}")
+                    st.write(f"成交量: {pc.pc_volume_ratio:.2f}")
 
                 st.caption(f"資料日期: {inst_signal.date}")
 
