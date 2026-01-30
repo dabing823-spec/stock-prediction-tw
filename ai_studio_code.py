@@ -98,8 +98,10 @@ from etf_analytics import (
     analyze_holding_periods,
     get_holding_statistics,
     analyze_weight_signals,
-    get_conviction_summary,
-    analyze_consecutive_changes,
+)
+from institutional_tracker import (
+    get_institutional_signal,
+    InstitutionalSignal,
 )
 
 
@@ -307,6 +309,56 @@ def main():
             st.error(f"🔥 **本月焦點:** {', '.join(active_schedules)}")
         else:
             st.info("本月無大型調整")
+
+        st.divider()
+
+        # === 法人籌碼訊號 (次等訊號) ===
+        st.subheader("📊 法人籌碼")
+
+        try:
+            inst_signal = get_institutional_signal()
+
+            # 紅綠燈顯示
+            signal_colors = {
+                "green": "🟢",
+                "red": "🔴",
+                "yellow": "🟡"
+            }
+
+            # 訊號強度顯示
+            strength_display = "★" * inst_signal.strength + "☆" * (5 - inst_signal.strength)
+
+            # 主要訊號卡片
+            if inst_signal.signal == "bullish":
+                st.success(f"{inst_signal.emoji} **偏多** {strength_display}")
+            elif inst_signal.signal == "bearish":
+                st.error(f"{inst_signal.emoji} **偏空** {strength_display}")
+            else:
+                st.warning(f"{inst_signal.emoji} **中性** {strength_display}")
+
+            st.caption(inst_signal.summary)
+
+            # 展開詳細資訊
+            with st.expander("📋 詳細籌碼", expanded=False):
+                for detail in inst_signal.details:
+                    st.write(f"• {detail}")
+
+                if inst_signal.futures_position:
+                    f = inst_signal.futures_position
+                    st.markdown("**期貨部位:**")
+                    st.write(f"外資淨: {f.foreign_net:,} 口")
+                    st.write(f"自營淨: {f.dealer_net:,} 口")
+
+                if inst_signal.options_position:
+                    o = inst_signal.options_position
+                    st.markdown("**選擇權:**")
+                    st.write(f"P/C Ratio: {o.pc_ratio:.2f}")
+
+                st.caption(f"資料日期: {inst_signal.date}")
+
+        except Exception as e:
+            st.warning("籌碼資料載入中...")
+            st.caption(f"({str(e)[:30]})")
 
         st.divider()
 
