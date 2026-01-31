@@ -1820,3 +1820,218 @@ def render_etf_header_card(etf_name: str, etf_code: str, manager: str = None):
     st.subheader(f"🎯 {etf_name}")
     manager_text = f" | 經理公司: {manager}" if manager else ""
     st.caption(f"代碼: {etf_code}{manager_text}")
+
+
+# =============================================================================
+# 擁擠交易與 P/C Ratio 分析組件
+# =============================================================================
+
+def render_crowded_trade_guide():
+    """
+    渲染擁擠交易量化指標說明卡片
+    讓使用者自行比對個股是否擁擠
+    """
+    st.subheader("📊 個股擁擠交易檢測指南")
+
+    st.info("""
+    **擁擠交易 (Crowded Trade)** = 市場參與者過度集中於同一方向。
+    一旦反轉，所有人同時湧向出口，造成「人踩人」的多殺多現象。
+    """)
+
+    # 使用 expander 分類展示
+    with st.expander("🏦 **投信持股比例** — 買盤力竭訊號", expanded=True):
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.metric("危險門檻", "> 15%", delta="警戒", delta_color="inverse")
+        with col2:
+            st.markdown("""
+            - 投信受法規限制，單一基金持股不得超過 10%
+            - 當總持股達 15%，代表「買盤力竭」
+            - 一旦股價走弱，各家投信競相出場引發多殺多
+            - **查詢方式**: 證交所基本市況報導 / CMoney
+            """)
+
+    with st.expander("💳 **融資使用率 / 維持率** — 斷頭連鎖反應", expanded=True):
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.metric("融資使用率", "> 50%", delta="危險", delta_color="inverse")
+            st.metric("融資維持率", "< 140%", delta="警戒", delta_color="inverse")
+        with col2:
+            st.markdown("""
+            | 指標 | 數值 | 意義 |
+            |------|------|------|
+            | 融資使用率 | > 50% | 槓桿過重 |
+            | 融資使用率 | > 70% | 極度危險 |
+            | 融資維持率 | < 140% | 接近追繳 |
+            | 融資維持率 | < 130% | 強制斷頭 |
+
+            - 初始維持率約 166%，跌 20% 就接近斷頭
+            - **查詢方式**: 證交所信用交易統計
+            """)
+
+    with st.expander("⚡ **當沖比例** — 流動性陷阱", expanded=False):
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.metric("危險門檻", "> 40%", delta="過熱", delta_color="inverse")
+        with col2:
+            st.markdown("""
+            - 當沖比 > 40-50% 代表已成當沖客戰場
+            - 缺乏長線買盤支持
+            - 一旦反轉，當沖買單瞬間轉為賣單
+            - 形成「空氣層」導致股價崩塌
+            - **查詢方式**: 證交所當日沖銷交易統計
+            """)
+
+    with st.expander("📈 **籌碼集中度** — 主力與散戶的對抗", expanded=False):
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.metric("1日集中度", "> 20%", delta="主力重押", delta_color="off")
+        with col2:
+            st.markdown("""
+            | 指標 | 警戒值 | 意義 |
+            |------|--------|------|
+            | 1日籌碼集中度 | > 20% | 特定主力重押 |
+            | 買超家數 << 賣超家數 | - | 籌碼集中於大戶 |
+            | 買進家數暴增 | - | 籌碼流向散戶 (崩潰前兆) |
+
+            - **查詢方式**: 籌碼K線 / XQ
+            """)
+
+    with st.expander("🌍 **外資持股 (中小型股)** — 撤退風險", expanded=False):
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.metric("危險門檻", "> 40%", delta="撤退風險", delta_color="inverse")
+        with col2:
+            st.markdown("""
+            - 外資撤退時不看價格直接砸
+            - 中小型股流動性差，衝擊更大
+            - 搭配觀察：個股期貨未平倉異常放大
+            - **查詢方式**: 證交所外資持股統計
+            """)
+
+    # 觸發條件提醒
+    st.warning("""
+    ⚠️ **重要**: 擁擠 ≠ 立即做空
+
+    需等待**觸發事件**：
+    1. 📉 技術破位：跌破 20MA 且量增
+    2. 📰 利多不漲：財報優於預期但收黑
+    3. 👑 龍頭先倒：同族群領頭羊先破線
+    4. 🏃 法人翻空：投信連續 3 日賣超
+    """)
+
+
+def render_pc_ratio_analysis(pc_analysis):
+    """
+    渲染完整的 P/C Ratio 分析
+    包含當前值、均線、趨勢、歷史圖表
+    """
+    if pc_analysis is None:
+        st.warning("P/C Ratio 資料載入失敗")
+        return
+
+    st.subheader("📈 選擇權 Put/Call Ratio 分析")
+
+    # 訊號說明
+    signal_display = {
+        "extreme_bullish": ("🟢", "極度悲觀 (反向買點)", "success"),
+        "bullish": ("🟢", "偏空 (反向偏多)", "success"),
+        "neutral": ("🟡", "中性", "warning"),
+        "bearish": ("🔴", "偏多 (注意風險)", "error"),
+        "extreme_bearish": ("🔴", "極度樂觀 (頭部警訊)", "error"),
+    }
+    emoji, label, msg_type = signal_display.get(pc_analysis.signal, ("🟡", "未知", "info"))
+
+    # 主要訊號卡片
+    if msg_type == "success":
+        st.success(f"{emoji} **{label}**")
+    elif msg_type == "error":
+        st.error(f"{emoji} **{label}**")
+    else:
+        st.warning(f"{emoji} **{label}**")
+
+    st.caption(pc_analysis.interpretation)
+
+    # 數據展示
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric(
+            "當前 (未平倉)",
+            f"{pc_analysis.current.pc_oi_ratio:.2f}",
+            delta=f"百分位 {pc_analysis.percentile:.0f}%",
+            delta_color="off"
+        )
+
+    with col2:
+        st.metric(
+            "5MA",
+            f"{pc_analysis.ma5:.2f}",
+        )
+
+    with col3:
+        st.metric(
+            "10MA",
+            f"{pc_analysis.ma10:.2f}",
+        )
+
+    with col4:
+        st.metric(
+            "20MA",
+            f"{pc_analysis.ma20:.2f}",
+        )
+
+    # 詳細數據
+    with st.expander("📋 詳細數據", expanded=False):
+        col_a, col_b = st.columns(2)
+
+        with col_a:
+            st.markdown("**當日數據:**")
+            st.write(f"- 日期: {pc_analysis.current.date}")
+            st.write(f"- Put 未平倉: {pc_analysis.current.put_oi:,}")
+            st.write(f"- Call 未平倉: {pc_analysis.current.call_oi:,}")
+            st.write(f"- 未平倉 P/C: {pc_analysis.current.pc_oi_ratio:.2f}")
+            st.write(f"- 成交量 P/C: {pc_analysis.current.pc_volume_ratio:.2f}")
+
+        with col_b:
+            st.markdown("**趨勢判斷:**")
+            trend_display = {
+                "rising": "📈 上升趨勢 (散戶轉空)",
+                "falling": "📉 下降趨勢 (散戶轉多)",
+                "stable": "➡️ 橫盤整理"
+            }
+            st.write(f"- 趨勢: {trend_display.get(pc_analysis.trend, '未知')}")
+            st.write(f"- 5MA vs 20MA: {pc_analysis.ma5:.2f} vs {pc_analysis.ma20:.2f}")
+
+    # P/C Ratio 解讀說明
+    with st.expander("💡 P/C Ratio 解讀說明", expanded=False):
+        st.markdown("""
+        **P/C Ratio = Put 未平倉量 ÷ Call 未平倉量**
+
+        | P/C Ratio (10MA) | 市場情緒 | 操作意涵 |
+        |------------------|----------|----------|
+        | < 0.6 | 極度樂觀 / 自滿 | ⚠️ 市場可能形成頭部 |
+        | 0.6 - 0.8 | 偏多 | 趨勢可能延續 |
+        | 0.8 - 1.0 | 中性 | 多空平衡 |
+        | 1.0 - 1.2 | 偏空 | 市場謹慎 |
+        | > 1.2 | 極度悲觀 / 恐慌 | 🟢 反向指標，可能是底部 |
+
+        **台股特性**: 法人通常是選擇權賣方，散戶是買方。
+        因此 P/C Ratio 可視為**散戶情緒的反向指標**。
+        """)
+
+    # 歷史走勢圖
+    if pc_analysis.history:
+        st.markdown("**近期走勢:**")
+
+        import pandas as pd
+
+        df = pd.DataFrame(pc_analysis.history)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df.sort_values('date')
+
+        # 使用 Streamlit 原生 line_chart
+        chart_data = df.set_index('date')[['pc_oi_ratio']]
+        chart_data.columns = ['P/C Ratio (未平倉)']
+
+        st.line_chart(chart_data, height=200)

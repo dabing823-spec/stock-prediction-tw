@@ -66,6 +66,20 @@ class PutCallRatioData:
 
 
 @dataclass
+class PCRatioAnalysis:
+    """P/C Ratio 完整分析"""
+    current: PutCallRatioData
+    ma5: float                # 5日均線
+    ma10: float               # 10日均線
+    ma20: float               # 20日均線
+    percentile: float         # 過去一年百分位
+    trend: str                # "rising", "falling", "stable"
+    signal: str               # "extreme_bullish", "bullish", "neutral", "bearish", "extreme_bearish"
+    interpretation: str       # 文字解讀
+    history: List[dict]       # 歷史資料 (最近20筆)
+
+
+@dataclass
 class InstitutionalSignal:
     """綜合籌碼訊號"""
     signal: str            # "bullish", "bearish", "neutral"
@@ -224,6 +238,113 @@ def fetch_put_call_ratio() -> Optional[PutCallRatioData]:
     except Exception as e:
         print(f"抓取 P/C Ratio 失敗: {e}")
         return None
+
+
+@inst_cache(ttl_seconds=600)
+def fetch_pc_ratio_history(days: int = 60) -> List[dict]:
+    """
+    從期交所 OpenAPI 抓取歷史 P/C Ratio
+    返回最近 N 天的資料
+    """
+    url = f"{TAIFEX_API_BASE}/PutCallRatio"
+
+    try:
+        headers = {
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0'
+        }
+
+        response = requests.get(url, headers=headers, timeout=15)
+
+        if response.status_code != 200:
+            return []
+
+        data = response.json()
+
+        if not data:
+            return []
+
+        # 取最近 N 筆
+        history = []
+        for item in data[:days]:
+            date = item.get('Date', '')
+            if len(date) == 8:
+                date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+
+            history.append({
+                'date': date,
+                'pc_volume_ratio': parse_float(item.get('PutCallVolumeRatio%', 100)) / 100,
+                'pc_oi_ratio': parse_float(item.get('PutCallOIRatio%', 100)) / 100,
+                'put_oi': parse_int(item.get('PutOI', 0)),
+                'call_oi': parse_int(item.get('CallOI', 0)),
+            })
+
+        return history
+
+    except Exception as e:
+        print(f"抓取歷史 P/C Ratio 失敗: {e}")
+        return []
+
+
+def analyze_pc_ratio() -> Optional[PCRatioAnalysis]:
+    """
+    完整分析 P/C Ratio，包含均線、百分位、趨勢判斷
+    """
+    current = fetch_put_call_ratio()
+    history = fetch_pc_ratio_history(60)
+
+    if not current or not history:
+        return None
+
+    # 計算均線 (使用未平倉 P/C Ratio)
+    oi_ratios = [h['pc_oi_ratio'] for h in history]
+
+    ma5 = sum(oi_ratios[:5]) / 5 if len(oi_ratios) >= 5 else current.pc_oi_ratio
+    ma10 = sum(oi_ratios[:10]) / 10 if len(oi_ratios) >= 10 else current.pc_oi_ratio
+    ma20 = sum(oi_ratios[:20]) / 20 if len(oi_ratios) >= 20 else current.pc_oi_ratio
+
+    # 計算百分位 (當前值在過去資料中的位置)
+    sorted_ratios = sorted(oi_ratios)
+    position = sum(1 for r in sorted_ratios if r <= current.pc_oi_ratio)
+    percentile = (position / len(sorted_ratios)) * 100 if sorted_ratios else 50
+
+    # 判斷趨勢 (比較 5MA 與 20MA)
+    if ma5 > ma20 * 1.05:
+        trend = "rising"
+    elif ma5 < ma20 * 0.95:
+        trend = "falling"
+    else:
+        trend = "stable"
+
+    # 判斷訊號 (基於 10MA)
+    # 注意：P/C Ratio 高 = 散戶買 Put 偏空 = 反向指標偏多
+    if ma10 < 0.6:
+        signal = "extreme_bearish"  # 散戶極度樂觀，市場可能見頂
+        interpretation = "⚠️ P/C Ratio 極低 (10MA < 0.6)，散戶極度樂觀，市場可能形成頭部，注意風險"
+    elif ma10 < 0.8:
+        signal = "bearish"  # 散戶偏多
+        interpretation = "🟡 P/C Ratio 偏低，散戶偏多，市場情緒樂觀"
+    elif ma10 > 1.5:
+        signal = "extreme_bullish"  # 散戶極度悲觀，可能是底部
+        interpretation = "🟢 P/C Ratio 極高 (10MA > 1.5)，散戶極度悲觀，市場可能形成底部，反向買點"
+    elif ma10 > 1.2:
+        signal = "bullish"  # 散戶偏空
+        interpretation = "🟢 P/C Ratio 偏高，散戶偏空，反向指標偏多"
+    else:
+        signal = "neutral"
+        interpretation = "⚪ P/C Ratio 中性區間 (0.8-1.2)，市場情緒平衡"
+
+    return PCRatioAnalysis(
+        current=current,
+        ma5=ma5,
+        ma10=ma10,
+        ma20=ma20,
+        percentile=percentile,
+        trend=trend,
+        signal=signal,
+        interpretation=interpretation,
+        history=history[:20]  # 返回最近20筆供圖表使用
+    )
 
 
 def analyze_institutional_signal(

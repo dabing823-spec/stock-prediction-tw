@@ -65,6 +65,9 @@ from ui_components import (
     render_consecutive_changes_box,
     render_holdings_table_with_search,
     render_etf_header_card,
+    # 擁擠交易與 P/C Ratio 組件
+    render_crowded_trade_guide,
+    render_pc_ratio_analysis,
 )
 from etf_rotation import (
     THEME_ETFS,
@@ -102,6 +105,7 @@ from etf_analytics import (
 from institutional_tracker import (
     get_institutional_signal,
     InstitutionalSignal,
+    analyze_pc_ratio,
 )
 
 
@@ -908,6 +912,24 @@ def main():
                 alloc_capital, risk_level, market_condition
             )
             render_allocation_chart(alloc_result)
+
+        st.divider()
+
+        # ==========================================================================
+        # P/C Ratio 完整分析
+        # ==========================================================================
+        try:
+            pc_analysis = analyze_pc_ratio()
+            render_pc_ratio_analysis(pc_analysis)
+        except Exception as e:
+            st.warning(f"P/C Ratio 分析載入失敗: {str(e)[:50]}")
+
+        st.divider()
+
+        # ==========================================================================
+        # 個股擁擠交易檢測指南
+        # ==========================================================================
+        render_crowded_trade_guide()
 
     # ==========================================================================
     # Tab 8: 主動型 ETF 追蹤
