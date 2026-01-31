@@ -2035,3 +2035,101 @@ def render_pc_ratio_analysis(pc_analysis):
         chart_data.columns = ['P/C Ratio (未平倉)']
 
         st.line_chart(chart_data, height=200)
+
+
+# =============================================================================
+# 排名躍進追蹤組件
+# =============================================================================
+
+def render_ranking_momentum_card(summary: dict):
+    """
+    渲染排名躍進摘要卡片
+    """
+    st.subheader("🚀 排名躍進追蹤")
+
+    history_days = summary.get('history_days', 0)
+
+    if history_days < 2:
+        st.info("""
+        📊 **資料收集中...**
+
+        排名追蹤器需要累積歷史資料才能分析躍進情況。
+        請持續使用本系統，資料將自動累積。
+
+        - 目前資料天數: {0}
+        - 建議累積天數: 7-30 天
+        """.format(history_days))
+        return
+
+    st.caption(f"追蹤期間: 近 30 天 | 歷史資料: {history_days} 天")
+
+    # 接近門檻的重點關注
+    near_threshold = summary.get('near_threshold', [])
+    if near_threshold:
+        st.error("🎯 **重點關注：接近 40 名門檻且持續上升**")
+        for item in near_threshold[:5]:
+            delta_text = f"+{item.rank_change}" if item.rank_change > 0 else str(item.rank_change)
+            st.markdown(f"""
+            **{item.code} {item.name}** — 排名 {item.current_rank}
+            (從 {item.previous_rank} 上升 {delta_text} 名)
+            """)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.success("📈 **排名大躍進 TOP 10**")
+        top_risers = summary.get('top_risers', [])
+        if top_risers:
+            for item in top_risers:
+                trend_icon = "🔥" if item.rank_change >= 10 else "📈"
+                st.write(f"{trend_icon} **{item.code}** {item.name}: {item.previous_rank} → {item.current_rank} (+{item.rank_change})")
+        else:
+            st.caption("暫無顯著上升的個股")
+
+    with col2:
+        st.error("📉 **排名大退步 TOP 10**")
+        top_fallers = summary.get('top_fallers', [])
+        if top_fallers:
+            for item in top_fallers:
+                st.write(f"📉 **{item.code}** {item.name}: {item.previous_rank} → {item.current_rank} ({item.rank_change})")
+        else:
+            st.caption("暫無顯著下降的個股")
+
+
+def render_potential_inclusion_alert(potential_in: list, potential_out: list):
+    """
+    渲染潛在納入/剔除警示
+    """
+    if not potential_in and not potential_out:
+        return
+
+    st.subheader("⚠️ 排名動態警示")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if potential_in:
+            st.success("🟢 **潛在納入候選** (排名上升中)")
+            for item in potential_in[:5]:
+                alert_icon = "🔥" if item.alert_level == "high" else "⚡" if item.alert_level == "medium" else "📈"
+                st.markdown(f"""
+                {alert_icon} **{item.code} {item.name}**
+                - 當前排名: {item.current_rank}
+                - 30天前排名: {item.previous_rank}
+                - 上升: +{item.rank_change} 名
+                """)
+        else:
+            st.info("目前無明顯的潛在納入候選")
+
+    with col2:
+        if potential_out:
+            st.error("🔴 **潛在剔除風險** (排名下降中)")
+            for item in potential_out[:5]:
+                st.markdown(f"""
+                📉 **{item.code} {item.name}**
+                - 當前排名: {item.current_rank}
+                - 30天前排名: {item.previous_rank}
+                - 下降: {item.rank_change} 名
+                """)
+        else:
+            st.info("目前無明顯的剔除風險標的")

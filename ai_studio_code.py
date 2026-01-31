@@ -68,6 +68,9 @@ from ui_components import (
     # 擁擠交易與 P/C Ratio 組件
     render_crowded_trade_guide,
     render_pc_ratio_analysis,
+    # 排名躍進組件
+    render_ranking_momentum_card,
+    render_potential_inclusion_alert,
 )
 from etf_rotation import (
     THEME_ETFS,
@@ -106,6 +109,10 @@ from institutional_tracker import (
     get_institutional_signal,
     InstitutionalSignal,
     analyze_pc_ratio,
+)
+from ranking_tracker import (
+    get_ranking_momentum_summary,
+    get_potential_inclusions,
 )
 
 
@@ -557,6 +564,30 @@ def main():
 
         with st.spinner("計算權重中..."):
             df_150 = enrich_dataframe(top150, codes, add_weight=True)
+
+        # === 排名躍進追蹤 ===
+        st.divider()
+
+        try:
+            # 取得 0050 成分股清單 (用於判斷潛在納入/剔除)
+            holdings_0050 = holdings.get("0050", [])
+
+            # 計算排名動能
+            momentum_summary = get_ranking_momentum_summary(df_mcap)
+            render_ranking_momentum_card(momentum_summary)
+
+            # 潛在納入/剔除警示
+            if holdings_0050:
+                potential_in, potential_out = get_potential_inclusions(df_mcap, holdings_0050)
+                render_potential_inclusion_alert(potential_in, potential_out)
+
+        except Exception as e:
+            st.caption(f"排名追蹤功能載入中... ({str(e)[:30]})")
+
+        st.divider()
+
+        # === 完整權重表 ===
+        st.subheader("📊 市值排名 Top 150")
 
         weight_columns = ["排名", "連結代碼", "股票名稱", "權重(Top150)",
                          "總市值", "現價", "成交值", "漲跌幅"]
